@@ -1,0 +1,22 @@
+[Unit]
+Description=AirplayMatrix settings web UI
+Documentation=file:///home/airplaymatrix/Documents/AirplayMatrix-main/Software/webui/app.py
+After=network-online.target shairport-sync.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=airplaymatrix
+Group=airplaymatrix
+WorkingDirectory=/home/airplaymatrix/Documents/AirplayMatrix-main/Software/webui
+ExecStart=/home/airplaymatrix/Documents/AirplayMatrix-main/Software/webui/.venv/bin/python -m flask --app app run --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=3
+
+# Modest hardening -- still needs to reach sudo, systemd (for the reboot
+# helper's systemd-run), nmcli, and its own config dir under $HOME.
+NoNewPrivileges=false
+ProtectSystem=false
+
+[Install]
+WantedBy=multi-user.target

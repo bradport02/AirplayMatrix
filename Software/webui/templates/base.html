@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AirplayMatrix{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  {% from "_icons.html" import icon, logo %}
+  {% if session.get('authed') %}
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('dashboard') }}">{{ logo() }} <span class="brand-text">AirplayMatrix</span></a>
+    <nav>
+      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' }}" title="Settings" aria-label="Settings">{{ icon('sliders') }} <span class="nav-label">Settings</span></a>
+      <a href="{{ url_for('wifi_page') }}" class="{{ 'active' if request.endpoint == 'wifi_page' }}" title="Wi-Fi" aria-label="Wi-Fi">{{ icon('wifi') }} <span class="nav-label">Wi-Fi</span></a>
+      <a href="{{ url_for('matrix_page') }}" class="{{ 'active' if request.endpoint == 'matrix_page' }}" title="Matrix" aria-label="Matrix">{{ icon('grid') }} <span class="nav-label">Matrix</span></a>
+      <form method="post" action="{{ url_for('logout') }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="link-button" title="Log out" aria-label="Log out">{{ icon('logout') }} <span class="nav-label">Log out</span></button>
+      </form>
+    </nav>
+  </header>
+  {% endif %}
+
+  <main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashes">
+        {% for category, message in messages %}
+          <div class="flash flash-{{ category }}">
+            {{ icon('check' if category == 'ok' else 'alert') }}
+            <span>{{ message }}</span>
+          </div>
+        {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

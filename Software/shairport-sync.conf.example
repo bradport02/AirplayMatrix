@@ -1,0 +1,37 @@
+// Managed by AirplayMatrix setup_pi.sh. Original saved as
+// /etc/shairport-sync.conf.orig.
+general = {
+  name = "AirplayMatrix";
+  // Placeholder until a USB DAC is attached — the Pi 5 has no analog
+  // audio out. Swap output_device below once one is plugged in
+  // (check `aplay -l` for its card name).
+  output_backend = "alsa";
+};
+
+alsa = {
+  // vc4hdmi0 is the first HDMI port's audio device. Replace with the
+  // USB DAC's card name (e.g. "hw:1,0" or similar from `aplay -l`)
+  // once one is connected.
+  output_device = "default";
+};
+
+metadata = {
+  enabled = "yes";
+  include_cover_art = "yes";
+  pipe_name = "/tmp/shairport-sync-metadata";
+  pipe_timeout = 5000;
+};
+
+sessioncontrol = {
+  // Drives TV power over HDMI-CEC (see /usr/local/bin/airplay-tv-power.sh).
+  // Entering active state = an AirPlay device has connected/started a
+  // session -> wake the TV. Exiting active state = playback has been
+  // stopped for active_state_timeout seconds -> put the TV in standby.
+  run_this_before_entering_active_state = "/usr/local/bin/airplay-tv-power.sh on";
+  run_this_after_exiting_active_state = "/usr/local/bin/airplay-tv-power.sh off";
+  // Wait 5 minutes of no playback before exiting active state, so a brief
+  // pause (or switching tracks) doesn't turn the TV off and back on.
+  active_state_timeout = 300.0;
+  // Don't block audio start/stop on the CEC command finishing.
+  wait_for_completion = "no";
+};

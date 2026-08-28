@@ -1,0 +1,16 @@
+[Unit]
+Description=AirPlay TV-remote passthrough (HDMI-CEC -> shairport-sync D-Bus control)
+Documentation=file:///usr/local/bin/airplay-cec-remote.py
+After=shairport-sync.service dbus.service
+Wants=shairport-sync.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/airplay-cec-remote.py
+User=shairport-sync
+Group=shairport-sync
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

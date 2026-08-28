@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Wi-Fi — AirplayMatrix{% endblock %}
+{% block content %}
+{% from "_icons.html" import icon %}
+
+<header class="page-head">
+  <h1>{{ icon('wifi') }} Wi-Fi</h1>
+  <p>{% if wifi.connection %}Connected to <strong>{{ wifi.connection }}</strong>.{% else %}Not currently connected.{% endif %}</p>
+</header>
+
+<section class="card">
+  <h2>Connect</h2>
+  <p class="muted">Networks are rescanned each time this page loads.</p>
+  <p class="muted warn">Connecting to a different network will disconnect this session -- reconnect at the new address once it's back online.</p>
+  <form method="post" action="{{ url_for('wifi_connect') }}" onsubmit="return prepareWifiSubmit()">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Network
+      <select id="ssid-select" onchange="onNetworkSelect()">
+        <option value="">Select a network&hellip;</option>
+        {% for n in networks %}
+        <option value="{{ n.ssid | e }}" data-open="{{ 'true' if n.security == 'open' else 'false' }}">
+          {{ n.ssid }}{% if n.in_use %} (connected){% endif %} &mdash; {{ n.signal }}% &middot; {{ n.security }}
+        </option>
+        {% endfor %}
+        <option value="__manual__">Enter network name manually&hellip;</option>
+      </select>
+    </label>
+    {% if not networks %}
+    <p class="muted">No networks found. Reload the page to rescan.</p>
+    {% endif %}
+    <div id="manual-ssid-wrap" style="display:none">
+      <label>Network name (SSID) <input type="text" id="ssid-manual" maxlength="32"></label>
+    </div>
+    <input type="hidden" name="ssid" id="ssid-final" required>
+    <label>Password <input type="password" id="password" name="password" minlength="8" maxlength="63" placeholder="leave blank for an open network"></label>
+    <button type="submit" class="primary">{{ icon('wifi') }} Connect</button>
+  </form>
+</section>
+
+{% if saved %}
+<section class="card">
+  <h2>{{ icon('wifi') }} Saved networks</h2>
+  <ul class="network-list">
+    {% for s in saved %}
+    <li class="network-row">
+      <span class="network-name">{{ s }}</span>
+      <form method="post" action="{{ url_for('wifi_forget') }}" class="inline"
+            onsubmit="return confirm('Forget &quot;{{ s }}&quot;?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="ssid" value="{{ s }}">
+        <button type="submit" class="link-button">forget</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<script>
+function onNetworkSelect() {
+  const select = document.getElementById('ssid-select');
+  const manualWrap = document.getElementById('manual-ssid-wrap');
+  const manualInput = document.getElementById('ssid-manual');
+  const finalField = document.getElementById('ssid-final');
+  const pw = document.getElementById('password');
+
+  if (select.value === '__manual__') {
+    manualWrap.style.display = '';
+    finalField.value = manualInput.value;
+    pw.required = true;
+    manualInput.focus();
+    return;
+  }
+
+  manualWrap.style.display = 'none';
+  finalField.value = select.value;
+  const opt = select.options[select.selectedIndex];
+  const isOpen = select.value !== '' && opt.dataset.open === 'true';
+  pw.required = select.value !== '' && !isOpen;
+  if (isOpen) pw.value = '';
+}
+
+document.getElementById('ssid-manual').addEventListener('input', function () {
+  document.getElementById('ssid-final').value = this.value;
+});
+
+function prepareWifiSubmit() {
+  const select = document.getElementById('ssid-select');
+  const finalField = document.getElementById('ssid-final');
+  finalField.value = select.value === '__manual__'
+    ? document.getElementById('ssid-manual').value.trim()
+    : select.value;
+  if (!finalField.value) {
+    alert('Choose a network first.');
+    return false;
+  }
+  return true;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,9 @@
+/usr/bin/lwrespawn /usr/bin/pcmanfm-pi &
+/usr/bin/lwrespawn /usr/bin/wf-panel-pi &
+/usr/bin/kanshi &
+/usr/bin/lxsession-xdg-autostart
+
+# AirPlay Desk Display -- boots straight into the app. Not lwrespawn'd on
+# purpose: Shift+X (see rc.xml) closes it and that's meant to stick so the
+# desktop underneath is usable, not bounce straight back.
+/home/airplaymatrix/.local/bin/airplaymatrix-run.sh &

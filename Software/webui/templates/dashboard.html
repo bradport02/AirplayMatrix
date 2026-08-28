@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Settings — AirplayMatrix{% endblock %}
+{% block content %}
+{% from "_icons.html" import icon %}
+
+<header class="page-head">
+  <h1>Settings</h1>
+  <p>Device identity, network, and troubleshooting for this AirplayMatrix unit.</p>
+</header>
+
+<section class="card">
+  <h2>{{ icon('chip') }} Status</h2>
+  <dl class="status-grid">
+    <dt>Hostname</dt><dd>{{ hostname }}</dd>
+    <dt>IP address</dt><dd>{{ ip_addresses | join(', ') if ip_addresses else 'none' }}</dd>
+    <dt>{{ icon('wifi') }} Wi-Fi</dt>
+    <dd>
+      {% if wifi.connection %}Connected to <strong>{{ wifi.connection }}</strong>{% else %}Not connected{% endif %}
+      &middot; <a href="{{ url_for('wifi_page') }}">manage</a>
+    </dd>
+    <dt>{{ icon('grid') }} P3 matrix display</dt>
+    <dd><a href="{{ url_for('matrix_page') }}">configure</a></dd>
+    {% for unit, label in [('shairport-sync', 'AirPlay service'), ('airplay-cec-remote', 'TV remote passthrough')] %}
+    <dt>{{ label }}</dt>
+    <dd><span class="pill pill-{{ 'ok' if services[unit] == 'active' else 'bad' }}">{{ services[unit] }}</span></dd>
+    {% endfor %}
+  </dl>
+</section>
+
+<section class="card">
+  <h2>AirPlay device name</h2>
+  <p class="muted">This is the name that shows up when picking a speaker/receiver on iPhone/Mac.</p>
+  <form method="post" action="{{ url_for('set_airplay_name') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="name" value="{{ airplay_name }}" maxlength="64" required
+           pattern="[A-Za-z0-9 _.\-]{1,64}" title="Letters, numbers, spaces, . _ -">
+    <button type="submit" class="primary">Save</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>TV auto-off delay</h2>
+  <p class="muted">How long the TV waits with no AirPlay audio playing before it goes into standby over HDMI-CEC.</p>
+  <form method="post" action="{{ url_for('set_tv_timeout') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="number" name="seconds" min="5" max="3600" step="1"
+           value="{{ tv_timeout | int if tv_timeout is not none else 300 }}" required>
+    <span class="muted">seconds</span>
+    <button type="submit" class="primary">Save</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Advanced</h2>
+  <details>
+    <summary>Change admin password</summary>
+    <form method="post" action="{{ url_for('change_password') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label><span class="label-text">{{ icon('lock') }} Current password</span> <input type="password" name="current_password" required autocomplete="current-password"></label>
+      <label>New password <input type="password" name="new_password" minlength="8" required autocomplete="new-password"></label>
+      <label>Confirm new password <input type="password" name="confirm_password" minlength="8" required autocomplete="new-password"></label>
+      <button type="submit">Change password</button>
+    </form>
+  </details>
+
+  <details>
+    <summary>Onboard status LED</summary>
+    <p class="muted">Currently <strong>{{ 'on' if led.on else 'off' }}</strong>.</p>
+    <div class="button-row">
+      <form method="post" action="{{ url_for('set_led') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="state" value="on">
+        <button type="submit" class="{{ 'primary' if led.on else '' }}">{{ icon('bulb') }} Turn on</button>
+      </form>
+      <form method="post" action="{{ url_for('set_led') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="state" value="off">
+        <button type="submit" class="{{ 'primary' if not led.on else '' }}">{{ icon('bulb') }} Turn off</button>
+      </form>
+    </div>
+  </details>
+
+  <details>
+    <summary>Troubleshooting</summary>
+    <div class="button-row">
+      <form method="post" action="{{ url_for('restart_service', service='shairport-sync') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">{{ icon('refresh') }} Restart AirPlay service</button>
+      </form>
+      <form method="post" action="{{ url_for('restart_service', service='airplay-cec-remote') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">{{ icon('refresh') }} Restart TV remote passthrough</button>
+      </form>
+      <form method="post" action="{{ url_for('restart_display') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">{{ icon('refresh') }} Restart display app</button>
+      </form>
+      <form method="post" action="{{ url_for('reboot') }}"
+            onsubmit="return confirm('Reboot the AirplayMatrix Pi now?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="danger">{{ icon('power') }} Reboot Pi</button>
+      </form>
+    </div>
+
+    <p class="muted warn" style="margin-top: 0.8rem;">
+      Shutting down fully powers off the Pi. There is no remote wake -- only physical access
+      (unplug/replug power, or a smart plug) can bring it back on.
+    </p>
+    <div class="button-row">
+      <form method="post" action="{{ url_for('shutdown') }}"
+            onsubmit="return confirm('Shut down the AirplayMatrix Pi now?\n\nThis Pi CANNOT turn itself back on remotely -- you will need physical access (unplug/replug power, or a smart plug) to bring it back up.\n\nContinue?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="danger">{{ icon('power') }} Shut down Pi</button>
+      </form>
+    </div>
+  </details>
+
+  <details>
+    <summary>Restore default settings</summary>
+    <p class="muted warn">
+      Resets the P3 matrix display (power, mode, brightness, colour) and TV auto-off timeout back
+      to their defaults, and generates a brand-new random admin password -- shown once, right
+      after, on the login page. You'll be logged out immediately. Wi-Fi and the AirPlay device
+      name are left untouched.
+    </p>
+    <form method="post" action="{{ url_for('restore_defaults') }}"
+          onsubmit="return confirm('Restore default settings now?\n\nThis resets the matrix display and TV auto-off timeout, generates a brand-new admin password, and logs you out immediately. Wi-Fi and the AirPlay device name are left alone.\n\nContinue?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">{{ icon('refresh') }} Restore default settings</button>
+    </form>
+  </details>
+</section>
+
+{% endblock %}

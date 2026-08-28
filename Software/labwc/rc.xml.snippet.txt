@@ -1,0 +1,9 @@
+      </action>
+    </keybind>
+    <!-- Closes the AirPlay Desk Display app (airplaymatrix-run.sh in
+         autostart) so the desktop underneath is reachable on demand. -->
+    <keybind key="S-x">
+      <action name="Execute">
+        <command>/usr/local/bin/airplaymatrix-quit.sh</command>
+      </action>
+    </keybind>

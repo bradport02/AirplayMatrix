@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Matrix display — AirplayMatrix{% endblock %}
+{% block content %}
+{% from "_icons.html" import icon %}
+
+<header class="page-head">
+  <h1>{{ icon('grid') }} P3 matrix display</h1>
+  <p>Power, brightness, and colour for the LED panel.</p>
+</header>
+
+<section class="card">
+  <p class="muted warn">
+    Not wired to the panel yet. The ESP32 firmware currently only accepts album-art frames over
+    serial, with no command channel for power, brightness, colour, or a test pattern. Settings
+    saved here are held ready and will take effect once that firmware support ships.
+  </p>
+</section>
+
+<section class="card">
+  <h2>{{ icon('grid') }} Display mode</h2>
+  <p class="muted">Currently showing <strong>{{ 'album art' if matrix.mode == 'album' else 'fixed colour' }}</strong>.</p>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('set_matrix_mode') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="mode" value="album">
+      <button type="submit" class="{{ 'primary' if matrix.mode == 'album' else '' }}">Album art</button>
+    </form>
+    <form method="post" action="{{ url_for('set_matrix_mode') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="mode" value="fixed_color">
+      <button type="submit" class="{{ 'primary' if matrix.mode == 'fixed_color' else '' }}">Fixed colour</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <h2>{{ icon('power') }} Power</h2>
+  <p class="muted">Currently set to <strong>{{ 'on' if matrix.power else 'off' }}</strong>.</p>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('set_matrix_power') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="power" value="on">
+      <button type="submit" class="{{ 'primary' if matrix.power else '' }}">On</button>
+    </form>
+    <form method="post" action="{{ url_for('set_matrix_power') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="power" value="off">
+      <button type="submit" class="{{ 'danger' if not matrix.power else '' }}">Off</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <h2>{{ icon('sliders') }} Brightness</h2>
+  <form method="post" action="{{ url_for('set_matrix_brightness') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="range" name="brightness" min="0" max="100" step="1" value="{{ matrix.brightness }}"
+           oninput="document.getElementById('brightness-readout').textContent = this.value + '%'">
+    <span id="brightness-readout" class="muted">{{ matrix.brightness }}%</span>
+    <button type="submit" class="primary">Save</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>{{ icon('bulb') }} Fixed colour</h2>
+  <p class="muted">Used when display mode above is set to "Fixed colour".</p>
+  <form method="post" action="{{ url_for('set_matrix_color') }}" onsubmit="return prepareColorSubmit()">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Colour
+      <select id="color-select" onchange="onColorSelect()">
+        {% for hex, label in color_presets %}
+        <option value="{{ hex }}" {{ 'selected' if matrix.color == hex and not color_is_custom else '' }}>{{ label }}</option>
+        {% endfor %}
+        <option value="__custom__" {{ 'selected' if color_is_custom else '' }}>Custom&hellip;</option>
+      </select>
+    </label>
+    <input type="color" id="color-custom" value="{{ matrix.color }}"
+           style="display:{{ 'none' if not color_is_custom else '' }}">
+    <input type="hidden" name="color" id="color-final" value="{{ matrix.color }}">
+    <button type="submit" class="primary">Save</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>{{ icon('chip') }} Display test</h2>
+  <p class="muted">Run a self-test pattern on the panel (colour bars, all-white, etc).</p>
+  <form method="post" action="{{ url_for('matrix_display_test') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">{{ icon('refresh') }} Run display test</button>
+  </form>
+</section>
+
+<script>
+function onColorSelect() {
+  const select = document.getElementById('color-select');
+  const custom = document.getElementById('color-custom');
+  const final = document.getElementById('color-final');
+  if (select.value === '__custom__') {
+    custom.style.display = '';
+    final.value = custom.value;
+  } else {
+    custom.style.display = 'none';
+    final.value = select.value;
+  }
+}
+
+document.getElementById('color-custom').addEventListener('input', function () {
+  document.getElementById('color-final').value = this.value;
+});
+
+function prepareColorSubmit() {
+  const select = document.getElementById('color-select');
+  document.getElementById('color-final').value = select.value === '__custom__'
+    ? document.getElementById('color-custom').value
+    : select.value;
+  return true;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Vendored/reference binary artifact -- not used by any installer, and
+# platform-specific (arm64) in a way that doesn't belong version-controlled.
+Software/app/qml/*.deb
+
+# Local editor/OS cruft
+.DS_Store
+*.swp
+
+# Claude Code local tool-permission settings -- machine-specific, not project source.
+.claude/
+
+# Never commit runtime secrets (webui session key + password hash).
+config.json
