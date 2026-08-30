@@ -7,12 +7,60 @@ the TV on/off over HDMI-CEC when a session starts/stops, forwards TV-remote
 button presses into AirPlay transport controls, and exposes a small
 password-protected web UI for day-to-day settings.
 
-Two build targets are documented here:
+## Quick start
+
+Flash the OS first (Raspberry Pi Imager's advanced options set the
+hostname/username/SSH/Wi-Fi at flash time -- username **must** be
+`airplaymatrix`, see either install doc's step 1 if you haven't done this
+yet), boot the Pi, then as that user:
+
+```bash
+git clone https://github.com/bradport02/AirplayMatrix.git
+cd AirplayMatrix
+./setup.sh
+```
+
+That's the whole install. It:
+
+1. **Detects the hardware** -- a desktop/labwc session present means the Qt
+   kiosk display, nothing means the headless matrix daemon; on the kiosk
+   path, `uname -m` picks the Qt6 build (aarch64) or the Qt5 build
+   (everything else, e.g. Pi Zero WH). Override with `--kiosk` / `--headless`
+   / `--qt5` / `--qt6` if you want something other than the default for this
+   hardware; `./setup.sh --help` lists all of them.
+2. **Checks for and removes any previous install** -- stops/disables
+   whatever's already running before reinstalling, and if you're switching a
+   device between the kiosk display and headless (or back), cleanly tears
+   down whichever one you're switching *away* from so the two never end up
+   fighting over the ESP32's one USB serial port. **Safe to re-run** at any
+   time -- nothing here touches Wi-Fi credentials, the web UI's admin
+   password, or the lyrics/song-details toggles.
+3. **Installs and starts everything**: AirPlay receive, HDMI-CEC, the
+   settings web UI, and the display (kiosk app + its autostart routine, or
+   the headless daemon).
+4. **Prints the web UI's login URL and, on a first install, its
+   admin password** (shown once, ever -- change it from the Account page
+   after logging in).
+5. **Opens the app** -- launches the kiosk display immediately if a desktop
+   session is already up, or tells you to reboot if this is a fresh boot
+   with no session to launch into yet (headless has nothing to open; check
+   it's pushing frames with `sudo journalctl -u airplaymatrix-matrix -f`
+   instead).
+
+See the two docs below for what each step is automating and why -- this
+script is those docs turned into commands, not a separate design.
+
+## Build targets
+
+Two hardware targets are documented, both handled automatically by
+`setup.sh` above -- read these for hardware-specific caveats, manual/
+step-by-step instructions, or troubleshooting, not as a prerequisite to
+running the script:
 
 | Build | Hardware | What you get |
 |---|---|---|
 | [Full desktop build](docs/install-full-pi.md) | Pi 4/5-class board, screen attached | Everything below, plus the on-screen "Desk Display" kiosk app (album art, lyrics, now-playing) |
-| [Pi Zero WH build](docs/install-pi-zero-wh.md) | Pi Zero WH (original, ARM11) | Everything below; the desk-display kiosk app is a stretch on this hardware -- see that doc for the risk and a headless fallback |
+| [Pi Zero WH build](docs/install-pi-zero-wh.md) | Pi Zero WH (original, ARM11) | Everything below, plus a lighter Qt5/PySide2 kiosk app (`app_qt5/`) with lyrics/song-details as web UI toggles -- see that doc for the hardware risk and a headless fallback |
 
 "Everything below" = AirPlay receive, HDMI-CEC TV control + remote
 passthrough, LED matrix output, and the settings web UI.
@@ -29,7 +77,8 @@ passthrough, LED matrix output, and the settings web UI.
                     ▼                                       ▼
         ┌───────────────────────┐             ┌─────────────────────────┐
         │ Desk Display (Qt/QML) │  --or--     │ matrix_daemon.py         │
-        │ app/  (full build)    │             │ (headless build)         │
+        │ app/ (Qt6, Pi 5)      │             │ (headless build)         │
+        │ app_qt5/ (Qt5, Zero)  │             │                          │
         └───────────┬───────────┘             └────────────┬────────────┘
                     │ encode 64x64 JPEG, base64 over USB serial          │
                     └──────────────────────┬───────────────────────────┘
@@ -43,14 +92,18 @@ passthrough, LED matrix output, and the settings web UI.
             (device name, Wi-Fi, TV timeout, hostname, restarts, reboot)
 ```
 
-Both the desk-display app and `matrix_daemon.py` are two independent
-consumers of the same shairport-sync metadata pipe and the same
+The desk-display app (whichever Qt build), and `matrix_daemon.py`, are
+independent consumers of the same shairport-sync metadata pipe and the same
 `encoder.py`/`matrix/link.py` code -- only one of them needs to run, and
-they're never run together on the same box.
+they're never run together on the same box. `app/` and `app_qt5/` are
+likewise never both installed on the same box -- one Pi runs one Qt major
+version's build, picked by which hardware it is (see the two install docs).
 
 ## Repository layout
 
 ```
+setup.sh                    fresh-install/re-run script -- see Quick start above
+
 Software/
   receiver/               (conceptual only -- shairport-sync itself is an apt package, not vendored here)
   shairport-sync.conf.example   AirPlay name, alsa output, metadata pipe, CEC session hooks
@@ -59,6 +112,7 @@ Software/
   lrclib.py                 lyrics lookup (used by the desk-display app only)
   receiver.py                cross-platform receiver process supervisor (Pi: no-op; Windows: WSL2)
   sps_bridge.py               re-serves the metadata pipe over TCP (Windows/WSL only)
+  display_settings.py           shared show_lyrics/show_details toggle state (JSON under ~/.config), read by app_qt5 and written by the web UI
   matrix/
     link.py                    serial protocol to the ESP32/HUB75 firmware
     matrix_daemon.py            headless metadata → matrix bridge (no Qt), for constrained hardware
@@ -73,7 +127,11 @@ Software/
     airplaymatrix-privileged.py     the one root-owned script the web UI is allowed to invoke via sudo
     airplaymatrix-webui.service, airplaymatrix-webui.sudoers
   app/
-    main.py, app_controller.py, *_controller.py, qml/   the Qt/QML "Desk Display" kiosk app (full build only)
+    main.py, app_controller.py, *_controller.py, qml/   the Qt6/PySide6 "Desk Display" kiosk app (Pi 5 / full build)
+  app_qt5/
+    main.py, app_controller.py, *_controller.py, qml/   the Qt5/PySide2 port of the same app (Pi Zero WH build) --
+      settings_controller.py exposes display_settings.py's toggles to QML; lyrics/song-details visibility and
+      LyricsController's fetching both gate on them
   labwc/
     autostart.example, rc.xml.snippet.txt   desktop autostart + Shift+X keybind for the kiosk app
 
@@ -104,3 +162,6 @@ docs/
 - The web UI's `/matrix` page (power/brightness/colour/mode) is UI-only --
   the ESP32 firmware is currently a passive image-frame sink with no command
   channel, so none of those controls are wired to the panel yet.
+- `app_qt5/` (the Pi Zero WH kiosk build) hasn't been run on real Zero WH
+  hardware -- see docs/install-pi-zero-wh.md for exactly what's unverified
+  and how to check it on your own unit.

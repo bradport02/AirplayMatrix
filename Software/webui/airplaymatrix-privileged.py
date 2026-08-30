@@ -165,7 +165,12 @@ def cmd_restart_service(args: argparse.Namespace) -> None:
 
 
 def cmd_restart_display(_args: argparse.Namespace) -> None:
-    run(["pkill", "-TERM", "-f", "python3 -m app.main"], timeout=10.0)
+    # "python3 -m app" matches both "python3 -m app.main" (Pi 5, Qt6, app/)
+    # and "python3 -m app_qt5.main" (Pi Zero WH, Qt5, app_qt5/) -- a given
+    # device only ever runs one of the two builds, and airplaymatrix-run.sh
+    # below (installed per-build, see docs/install-*.md) already knows which
+    # one to relaunch, so this doesn't need to know either.
+    run(["pkill", "-TERM", "-f", "python3 -m app"], timeout=10.0)
     import time
 
     time.sleep(1.5)

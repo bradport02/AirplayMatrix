@@ -1,5 +1,14 @@
 # Pi Zero WH build
 
+> Most of what's below is automated by `setup.sh` at the repo root --
+> `git clone`, `cd AirplayMatrix`, `./setup.sh` -- which auto-detects a
+> 32-bit/non-aarch64 image and picks the Qt5 kiosk build (Plan A) or the
+> headless daemon (Plan B) for you based on whether a desktop session is
+> present, no flags needed. Read on for the hardware risk this build
+> carries, the ARMv6 caveats that are worth understanding before you buy
+> anything, manual step-by-step instructions if you'd rather not run a
+> script, and troubleshooting.
+
 The reference unit is a Pi 5. A Pi Zero WH (the original Zero W with
 pre-soldered headers -- **not** the Zero 2 W) is a very different machine,
 and that difference matters for this project specifically:
@@ -15,28 +24,67 @@ and that difference matters for this project specifically:
 
 Two things fall out of this before you buy anything or flash a card:
 
-**PySide6/Qt6 has no official armv6 build.** The Qt Company only publishes
-PySide6 wheels on PyPI for x86_64 and aarch64 -- there's no `pip install
-PySide6` on a 32-bit Zero. The only route to the Desk Display kiosk app on
-this hardware is Raspberry Pi OS's own apt-packaged
-`python3-pyside6.*`, and I can't confirm from here whether Raspberry Pi OS
-still builds those for the ARMv6 baseline the Zero WH needs (as opposed to
-ARMv7+, which the Zero 2 W and everything newer uses). **Check this before
-doing anything else**, on the actual device:
+**PySide6/Qt6 is a no-go on this hardware** -- confirmed. The Qt Company
+only publishes PySide6 wheels on PyPI for x86_64 and aarch64, so there's no
+`pip install PySide6` on a 32-bit Zero, and Raspberry Pi OS's own apt
+archive doesn't carry a usable `python3-pyside6.*` for the Zero's ARMv6
+baseline either. That rules out running `app/` (the Pi 5's Qt6 build)
+here at all, in any form.
+
+**Plan A here is a second build of the kiosk app on Qt5/PySide2**
+(`app_qt5/`), not the Qt6 one repackaged -- Qt5 is a genuinely different
+major version, not a recompile, so it's real second QML/Python tree,
+ported by hand from `app/`. It looks and behaves the same (same background,
+album art, and duration), with two differences:
+
+- Two things that were always-on in `app/` are now toggles in the settings
+  web UI, saved to `~/.config/airplaymatrix-display/config.json`
+  (`Software/display_settings.py`) and picked up by the running app within
+  a couple of seconds, no restart needed:
+  - **Song details** (title/artist/album) -- **on** by default.
+  - **Lyrics** -- **off** by default. This is the single most expensive
+    thing the app does (per-frame scrolling text layout on top of a
+    network lookup per track), and the reason both toggles exist at all:
+    flip it on from the web UI and watch `top`/`journalctl -u
+    shairport-sync -f` to see whether this specific ARM1176 can actually
+    carry it, without needing SSH or a reboot to try.
+  - Everything else -- background, blurred-artwork wash, album art,
+    scrub bar/duration, LED matrix output -- behaves identically to `app/`
+    and isn't optional.
+- `QtGraphicalEffects` (Qt5) stands in for `QtQuick.Effects`'s `MultiEffect`
+  (Qt6-only) for the background blur and album-art shadow. One small look
+  difference falls out of that: the Qt6 build's subtle saturation/
+  brightness grade on the blurred background is dropped rather than ported,
+  since QtGraphicalEffects has no single-pass equivalent and stacking a
+  second full-screen shader purely for that grade is exactly the kind of
+  extra GPU work this build can't spend on unproven hardware. See
+  `app_qt5/qml/Background.qml`'s comment for the detail.
+
+As with the Qt6 attempt this replaces, whether a single 1GHz ARM1176 core
+can run shairport-sync's real-time audio path, HDMI-CEC handling, *and* a
+Qt Quick scene graph at the same time -- Qt5's scene graph is lighter than
+Qt6's, but still real GPU/CPU work -- is a real open question I have not
+been able to test on actual Zero WH hardware. Watch for audio glitches
+(`journalctl -u shairport-sync -f` while something plays) and sustained
+near-100% CPU (`top`) while trying it, **starting with lyrics off** (the
+default) before testing whether turning them on tips it over. If it doesn't
+hold up even with lyrics off, [Plan B: headless](#plan-b-headless-no-kiosk-screen)
+below is a straight swap, no Pi-side hardware changes needed.
+
+**Check the apt packages exist before doing anything else**, on the actual
+device -- confirmed present in Debian trixie's archive (which Raspberry Pi
+OS Bookworm/Trixie mirrors closely for non-RPi-specific packages like Qt
+bindings) as of this doc being written, but that was checked on 64-bit
+hardware, not the Zero's 32-bit ARMv6 target, so still verify here rather
+than trust that blindly:
 
 ```bash
-apt-cache search pyside6
-apt-cache policy python3-pyside6.qtquick
+apt-cache policy python3-pyside2.qtcore python3-pyside2.qtquick python3-pyside2.qtqml python3-pyside2.qtgui
+apt-cache policy qml-module-qtgraphicaleffects qml-module-qtquick-layouts qml-module-qtquick-controls2 qml-module-qtquick-window2 qml-module-qtquick2
 ```
 
-If those come back empty, the kiosk app cannot run here at all and you
-should skip straight to [Plan B: headless](#plan-b-headless-no-kiosk-screen)
-below. If they do exist, you still have a real risk to weigh: a single
-1GHz core has to run shairport-sync's real-time audio path, HDMI-CEC
-handling, *and* a Qt Quick scene graph simultaneously. Audio glitches under
-that contention are plausible and I have not been able to test this on
-actual Zero WH hardware -- if you hit them, Plan B is a straight swap, no
-Pi-side hardware changes needed.
+If any of those come back with no candidate, the kiosk app cannot run here
+at all and you should skip straight to Plan B.
 
 ## Hardware for this build
 
@@ -95,8 +143,14 @@ sudo cp Software/cec/airplay-cec-remote.service /etc/systemd/system/
 sudo systemctl enable --now airplay-cec-remote.service
 ```
 
-(Skip `airplaymatrix-quit.sh` here if you're going headless -- it's only
-meaningful with the kiosk app running.)
+If you're attempting Plan A (the kiosk app) below, also install the Shift+X
+"quit the kiosk app" script -- skip this if you already know you're going
+headless (Plan B), it has nothing to bind to there:
+
+```bash
+sudo cp Software/cec/airplaymatrix-quit.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/airplaymatrix-quit.sh
+```
 
 ## 4. Settings web UI
 
@@ -105,17 +159,65 @@ this isn't a concern on the Zero. Follow it as written.
 
 ## 5. Display: kiosk app or headless daemon
 
-### Plan A: the kiosk app
+### Plan A: the kiosk app (Qt5/PySide2 build)
 
-If `apt-cache search pyside6` above actually found packages, follow
-[install-full-pi.md, step 5](install-full-pi.md#5-desk-display-kiosk-app)
-using the apt-package route (not the pip/venv one -- there's no PySide6
-wheel to pip-install here), substituting `python3-pyside6.qtcore` etc. for
-whatever the search above turned up. Then watch for audio glitches during
-playback (`journalctl -u shairport-sync -f` while something plays) and CPU
-saturation (`top` -- a sustained single core near 100% while the UI is
-idle is a bad sign). If it's not holding up, move to Plan B; nothing
-you've installed so far conflicts with it.
+Raspberry Pi OS **(32-bit), with desktop** (not Lite) for this plan. There's
+no PySide2 wheel for armv6 to `pip install` any more than there was for
+PySide6, so this is apt packages + the system interpreter, no venv (be
+consistent about that below -- `airplaymatrix-run.sh` has to invoke whatever
+interpreter actually has these packages):
+
+```bash
+sudo apt install -y \
+  python3-pyside2.qtcore python3-pyside2.qtgui python3-pyside2.qtqml python3-pyside2.qtquick \
+  qml-module-qtquick2 qml-module-qtquick-layouts qml-module-qtquick-controls2 qml-module-qtquick-window2 \
+  qml-module-qtgraphicaleffects \
+  python3-serial python3-pil
+```
+
+(No `dialout` group step here, matching the full build -- Raspberry Pi
+Imager's default user already gets `dialout` among its standard
+supplementary groups, which is what actually gives `app_qt5`, running as
+that desktop user, ESP32 serial access. Only the headless daemon in Plan B
+needs one added explicitly, because it deliberately runs as the
+`shairport-sync` service user instead.)
+
+Autostart, same shape as the full build's step 5 but pointing at the Qt5
+package (`app_qt5`, not `app`) and no `QT_QPA_PLATFORM` override -- Qt5's
+Wayland QPA plugin isn't in the apt set installed above, and the default
+(XCB, under the desktop session's own X11/Xwayland) is what's actually
+tested here:
+
+```bash
+mkdir -p ~/.local/bin
+install -m 0755 <(cat <<'EOF'
+#!/bin/bash
+set -e
+cd ~/Documents/AirplayMatrix-main/Software
+exec python3 -m app_qt5.main
+EOF
+) ~/.local/bin/airplaymatrix-run.sh
+```
+
+Append to `~/.config/labwc/autostart` and add the Shift+X quit keybind to
+`~/.config/labwc/rc.xml` -- both identical to
+[install-full-pi.md, step 5](install-full-pi.md#5-desk-display-kiosk-app),
+substituting nothing (`airplaymatrix-run.sh`, `airplaymatrix-quit.sh`, and
+the web UI's "Restart display app" button all work unmodified across both
+builds; see those files' comments if you're curious why).
+
+Reboot. The kiosk app should come up full-screen, with song details on and
+lyrics off (the defaults) -- toggle either from the web UI dashboard
+(`http://airplaymatrix.local:8080/`, the "Desk display" card) without
+restarting anything, and watch for audio glitches during playback
+(`journalctl -u shairport-sync -f`) and CPU saturation (`top` -- a
+sustained single core near 100% is a bad sign) as you do. **Test with
+lyrics off first, then turn them on**, since that's the toggle this whole
+build exists to let you test safely. If it's not holding up even with
+lyrics off, move to Plan B; nothing you've installed so far conflicts with
+it (stop/disable the kiosk app's autostart line in
+`~/.config/labwc/autostart` first, so the two don't fight over the ESP32's
+serial port).
 
 ### Plan B: headless (no kiosk screen)
 
@@ -123,7 +225,7 @@ No Qt, no desktop environment needed -- this runs fine on **Raspberry Pi OS
 Lite (32-bit)**.
 
 ```bash
-sudo apt install -y python3-pyserial python3-pil
+sudo apt install -y python3-serial python3-pil
 sudo usermod -aG dialout shairport-sync   # serial access to the ESP32
 
 sudo cp Software/matrix/airplaymatrix-matrix.service /etc/systemd/system/
@@ -155,6 +257,10 @@ sudo journalctl -u airplaymatrix-matrix -f
   track starting.
 - Leave it idle for 5 minutes after stopping playback -- the TV should go
   to standby (`active_state_timeout` in the conf).
+- If you went with Plan A, the web UI dashboard's "Desk display" card
+  should show song details on / lyrics off (the defaults), and toggling
+  either should change what's on screen within a couple of seconds with no
+  restart.
 
 ## If you outgrow the Zero WH
 

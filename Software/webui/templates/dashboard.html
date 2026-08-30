@@ -51,6 +51,46 @@
 </section>
 
 <section class="card">
+  <h2>{{ icon('chip') }} Desk display (Pi Zero WH / Qt5 build)</h2>
+  <p class="muted">
+    Only read by the Zero WH's lighter Qt5 kiosk app (<code>app_qt5</code>) -- the Pi 5's
+    full app always shows both. Toggling either takes effect live on the display within a
+    couple seconds, no restart needed, so you can test whether the Zero's single core keeps
+    up with live lyrics without SSH access.
+  </p>
+
+  <h3 class="subhead">{{ icon('mic') }} Lyrics</h3>
+  <p class="muted">Currently <strong>{{ 'on' if display.show_lyrics else 'off' }}</strong>. Off by default -- this is the expensive one to test.</p>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('set_display_setting', key='show_lyrics') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state" value="on">
+      <button type="submit" class="{{ 'primary' if display.show_lyrics else '' }}">On</button>
+    </form>
+    <form method="post" action="{{ url_for('set_display_setting', key='show_lyrics') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state" value="off">
+      <button type="submit" class="{{ 'danger' if not display.show_lyrics else '' }}">Off</button>
+    </form>
+  </div>
+
+  <h3 class="subhead">{{ icon('text') }} Song details (title / artist / album)</h3>
+  <p class="muted">Currently <strong>{{ 'on' if display.show_details else 'off' }}</strong>. On by default.</p>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('set_display_setting', key='show_details') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state" value="on">
+      <button type="submit" class="{{ 'primary' if display.show_details else '' }}">On</button>
+    </form>
+    <form method="post" action="{{ url_for('set_display_setting', key='show_details') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state" value="off">
+      <button type="submit" class="{{ 'danger' if not display.show_details else '' }}">Off</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
   <h2>Advanced</h2>
   <details>
     <summary>Change admin password</summary>
@@ -118,13 +158,13 @@
   <details>
     <summary>Restore default settings</summary>
     <p class="muted warn">
-      Resets the P3 matrix display (power, mode, brightness, colour) and TV auto-off timeout back
-      to their defaults, and generates a brand-new random admin password -- shown once, right
-      after, on the login page. You'll be logged out immediately. Wi-Fi and the AirPlay device
-      name are left untouched.
+      Resets the P3 matrix display (power, mode, brightness, colour), the desk-display lyrics/song-details
+      toggles, and TV auto-off timeout back to their defaults, and generates a brand-new random admin
+      password -- shown once, right after, on the login page. You'll be logged out immediately. Wi-Fi
+      and the AirPlay device name are left untouched.
     </p>
     <form method="post" action="{{ url_for('restore_defaults') }}"
-          onsubmit="return confirm('Restore default settings now?\n\nThis resets the matrix display and TV auto-off timeout, generates a brand-new admin password, and logs you out immediately. Wi-Fi and the AirPlay device name are left alone.\n\nContinue?');">
+          onsubmit="return confirm('Restore default settings now?\n\nThis resets the matrix display, desk-display toggles, and TV auto-off timeout, generates a brand-new admin password, and logs you out immediately. Wi-Fi and the AirPlay device name are left alone.\n\nContinue?');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="danger">{{ icon('refresh') }} Restore default settings</button>
     </form>
