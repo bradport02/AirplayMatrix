@@ -21,11 +21,23 @@ import json
 import re
 import secrets
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 from flask import Flask, flash, g, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+
+# display_settings.py lives one level up (Software/), a sibling of this
+# webui/ package rather than inside it -- same reason matrix_daemon.py does
+# this: it's shared with the kiosk app (app_qt5/), which also imports it as
+# a bare top-level module. WorkingDirectory for this service is webui/, so
+# it isn't on sys.path by default.
+_PARENT = str(Path(__file__).resolve().parent.parent)
+if _PARENT not in sys.path:
+    sys.path.insert(0, _PARENT)
+
+import display_settings  # noqa: E402
 
 SHAIRPORT_CONF = Path("/etc/shairport-sync.conf")
 CONFIG_DIR = Path.home() / ".config" / "airplaymatrix-webui"
@@ -332,6 +344,7 @@ def dashboard():
         wifi=wifi_status(),
         services={name: service_status(unit) for unit, name in RESTARTABLE.items()},
         led=led_status(),
+        display=display_settings.load(),
     )
 
 
@@ -361,6 +374,22 @@ def set_tv_timeout():
     seconds = request.form.get("seconds", "").strip()
     ok, out = run_privileged("set-tv-timeout", seconds)
     flash("TV auto-off timeout updated." if ok else f"Failed: {out}", "ok" if ok else "error")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/settings/display/<key>", methods=["POST"])
+def set_display_setting(key: str):
+    # Only for the Zero WH's Qt5 kiosk app (app_qt5/) -- the Pi 5's Qt6 app
+    # doesn't read this file, always showing both. No sudo/privileged-script
+    # involved: both this process and the kiosk app run as the same
+    # unprivileged user, this is just a JSON file under ~/.config.
+    if key not in display_settings.DEFAULTS:
+        flash("Unknown display setting.", "error")
+        return redirect(url_for("dashboard"))
+    state = request.form.get("state", "") == "on"
+    display_settings.set_one(key, state)
+    label = "Song details" if key == "show_details" else "Lyrics"
+    flash(f"{label} {'enabled' if state else 'disabled'} on the desk display.", "ok")
     return redirect(url_for("dashboard"))
 
 
@@ -439,6 +468,7 @@ def restore_defaults():
     new_password = secrets.token_urlsafe(9)
     _config["password_hash"] = generate_password_hash(new_password)
     _persist_config()
+    display_settings.save(dict(display_settings.DEFAULTS))  # type: ignore[arg-type]
 
     tv_ok, tv_out = run_privileged("set-tv-timeout", "300")
 

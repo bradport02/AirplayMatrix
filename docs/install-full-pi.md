@@ -1,5 +1,12 @@
 # Full desktop build (reference)
 
+> Most of what's below is automated by `setup.sh` at the repo root --
+> `git clone`, `cd AirplayMatrix`, `./setup.sh` -- which detects an
+> aarch64/desktop image and installs everything on this page, including the
+> kiosk app's autostart routine, then launches it. Read on for what it's
+> automating, manual step-by-step instructions if you'd rather not run a
+> script, or troubleshooting.
+
 This is what the running reference unit (a Raspberry Pi 5) actually has
 installed: AirPlay receive, HDMI-CEC TV control, LED matrix output via the
 "Desk Display" Qt/QML kiosk app, and the settings web UI. Use this doc as-is
@@ -123,10 +130,12 @@ python3 -m venv .venv
 ```
 
 (Or use `sudo apt install python3-pyside6.qtcore python3-pyside6.qtquick
-python3-pyside6.qtquickcontrols2 python3-pyside6.qtqml python3-pyserial
+python3-pyside6.qtquickcontrols2 python3-pyside6.qtqml python3-serial
 python3-pil` and skip the venv, running with the system interpreter instead
 -- either works, just be consistent about which interpreter
-`airplaymatrix-run.sh` below invokes.)
+`airplaymatrix-run.sh` below invokes. This is what the reference unit
+actually runs, and what `setup.sh` at the repo root uses -- the venv route
+above is equally valid, just less exercised on real hardware.)
 
 Autostart it from the desktop session:
 
