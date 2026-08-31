@@ -9,8 +9,12 @@ Item {
 
     // Idle state -- no AirPlay session open. A soft radar-style pulse
     // (rings expanding and fading from a centre dot) reads as "listening"
-    // without needing a device glyph or any status chrome; the wording
-    // below is the only thing that changes between "waiting" and "offline".
+    // without needing a device glyph or any status chrome. bridgeConnected
+    // tracks the metadata pipe's own connection, not whether shairport-sync
+    // itself is running -- shairport-sync only opens that pipe's write end
+    // once a session actually starts (confirmed by inspecting its open file
+    // descriptors while idle -- none), so the false branch below is what's
+    // on screen for virtually all of normal idle time, not an actual fault.
     ColumnLayout {
         anchors.centerIn: parent
         visible: !app.track.sessionActive
@@ -63,7 +67,7 @@ Item {
 
         Text {
             Layout.alignment: Qt.AlignHCenter
-            text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Receiver Offline"
+            text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Waiting for connection"
             color: Theme.colorTextSecondary
             font.family: Theme.fontFamily
             font.pixelSize: 16 * Theme.uiScale

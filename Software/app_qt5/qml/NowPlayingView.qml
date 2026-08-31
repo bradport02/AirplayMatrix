@@ -13,12 +13,17 @@ Item {
     // one that most needs to cost the GPU nothing at all -- no rings, no
     // pulsing dot, no Behavior-driven animation, just plain white text on
     // the flat black idle backdrop (Background.qml/Theme.colorIdleBackground).
-    // The wording is still the only thing that changes between "waiting"
-    // and "offline".
+    // bridgeConnected tracks the metadata pipe's own connection, not
+    // whether shairport-sync itself is running -- in practice that pipe
+    // only reports connected right as a session starts, so the false
+    // branch is what's on screen for virtually all of normal idle time,
+    // not an actual fault. "Waiting for connection" reflects that; a
+    // genuinely offline receiver isn't something this app can tell apart
+    // from a receiver that's simply idle, so it doesn't try to.
     Text {
         anchors.centerIn: parent
         visible: !app.track.sessionActive
-        text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Receiver Offline"
+        text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Waiting for connection"
         color: Theme.colorTextPrimary
         font.family: Theme.fontFamily
         font.pixelSize: 20 * Theme.uiScale
