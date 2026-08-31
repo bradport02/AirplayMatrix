@@ -6,14 +6,6 @@ general = {
   // audio out. Swap output_device below once one is plugged in
   // (check `aplay -l` for its card name).
   output_backend = "alsa";
-  // Always output at 100%, ignoring whatever volume level the AirPlay
-  // source (phone/Mac) is currently set to -- this receiver doesn't have
-  // its own physical volume control, and a source app remembering a low
-  // volume from a previous session otherwise means AirPlay starts quiet
-  // with no obvious way to fix it from this end. Trade-off: the source's
-  // volume slider/lock-screen control no longer does anything: the TV/amp
-  // it's plugged into becomes the only volume control.
-  ignore_volume_control = "yes";
 };
 
 alsa = {
