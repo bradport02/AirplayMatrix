@@ -4,8 +4,10 @@ A Raspberry Pi that shows up as an AirPlay speaker, plays the audio out over
 HDMI/analog, and pushes the currently-playing album art to a 64x64 HUB75 LED
 matrix (driven by a companion ESP32 board over USB serial). It also turns
 the TV on/off over HDMI-CEC when a session starts/stops, forwards TV-remote
-button presses into AirPlay transport controls, and exposes a small
-password-protected web UI for day-to-day settings.
+button presses into AirPlay transport controls, advertises the AirPlay
+device name as its CEC OSD name (shown as the HDMI input's label by
+receivers/TVs that query it -- support varies by brand/firmware), and
+exposes a small password-protected web UI for day-to-day settings.
 
 ## Quick start
 
