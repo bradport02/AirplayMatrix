@@ -19,18 +19,30 @@ CEC_DEV=/dev/cec0   # HDMI0 -- the only connected port on this Pi
 LOG_TAG=airplay-tv-power
 SHAIRPORT_CONF=/etc/shairport-sync.conf
 
-# AirPlay volume to set every time a *new* session starts (not on every
-# resume-within-the-idle-window -- see the sessioncontrol note above, this
-# only fires on a genuine new connection). The phone's own volume slider
-# keeps working normally afterward for that session; this only sets where
-# it starts. Picked because a source app remembering a low volume from a
-# previous session otherwise means AirPlay starts quiet with no way to fix
-# it from this end, and neither Pi has its own physical volume control.
-CONNECT_VOLUME_PERCENT=75
+# Web UI-editable settings (Software/display_settings.py, "AirPlay connect
+# volume" card): connect_volume_percent, in the same JSON file the kiosk
+# apps read for their own settings. Hardcoded absolute path, not
+# Path.home()-relative like display_settings.py itself gets away with --
+# this script runs as the `shairport-sync` user (see sessioncontrol in
+# shairport-sync.conf), not `airplaymatrix`, so that would resolve to the
+# wrong home directory entirely. No Python dependency either: this is a
+# system-user shell script, and the JSON is simple enough for grep/sed.
+DISPLAY_SETTINGS=/home/airplaymatrix/.config/airplaymatrix-display/config.json
+CONNECT_VOLUME_DEFAULT=75
 
 log() { logger -t "$LOG_TAG" "$*"; }
 
 cec() { cec-ctl -d "$CEC_DEV" "$@" >/dev/null 2>&1; }
+
+connect_volume_percent() {
+  local pct
+  pct=$(sed -n 's/.*"connect_volume_percent"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
+          "$DISPLAY_SETTINGS" 2>/dev/null | head -1)
+  [[ "$pct" =~ ^[0-9]+$ ]] || pct=$CONNECT_VOLUME_DEFAULT
+  (( pct < 0 )) && pct=0
+  (( pct > 100 )) && pct=100
+  printf '%s' "$pct"
+}
 
 # shairport-sync's D-Bus Volume property is AirPlay's native scale: -30.0dB
 # (quietest) to 0.0dB (loudest), linear -- see org.gnome.ShairportSync's
@@ -81,7 +93,7 @@ case "${1:-}" in
     my_phys_addr=$(cec-ctl -d "$CEC_DEV" -x 2>/dev/null | tail -n1)
     cec --to 0 --image-view-on
     cec --to 0 --active-source phys-addr="$my_phys_addr"
-    set_connect_volume "$CONNECT_VOLUME_PERCENT"
+    set_connect_volume "$(connect_volume_percent)"
     ;;
   off)
     log "AirPlay session ended (5 min idle) -> standby TV"

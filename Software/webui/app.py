@@ -410,6 +410,22 @@ def set_lyrics_offset():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/settings/connect-volume", methods=["POST"])
+def set_connect_volume():
+    # Read by cec/airplay-tv-power.sh (as the shairport-sync user, on every
+    # new AirPlay connection), not either kiosk app -- see
+    # display_settings.py's docstring.
+    raw = request.form.get("percent", "").strip()
+    try:
+        percent = int(raw)
+    except ValueError:
+        flash(f"\"{raw}\" isn't a whole number.", "error")
+        return redirect(url_for("dashboard"))
+    settings = display_settings.set_connect_volume_percent(percent)
+    flash(f"AirPlay will connect at {settings['connect_volume_percent']}% volume.", "ok")
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/wifi/connect", methods=["POST"])
 def wifi_connect():
     ssid = request.form.get("ssid", "").strip()

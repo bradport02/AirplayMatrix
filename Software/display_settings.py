@@ -23,6 +23,16 @@ way to derive the right value from the protocol -- it's the receiver's
 actual buffer depth, which isn't exposed -- so it's a knob to dial in by
 ear/eye from the web UI, not something computed.
 
+`connect_volume_percent` is a second exception, and isn't read by either
+kiosk app at all -- it's cec/airplay-tv-power.sh, run by shairport-sync as
+the `shairport-sync` user on every new AirPlay connection, that reads it
+(via CONFIG_PATH's literal string, not this module -- that script has no
+Python/this package's sys.path, and Path.home() would resolve to the
+*shairport-sync* user's home if it somehow did import this, not
+airplaymatrix's). It lives here anyway rather than its own file because
+the web UI already has a working read/write/live-reload story for this
+exact JSON file; no reason to invent a second one for one integer.
+
 Both the kiosk app and the web UI run as the same unprivileged
 `airplaymatrix` user, so this is a plain JSON file under ~/.config -- no
 sudo/privileged-script plumbing needed, unlike the device-name/Wi-Fi/etc.
@@ -48,6 +58,7 @@ DEFAULTS = {
     "show_lyrics": False,  # off by default -- Zero WH performance is unproven
     "show_details": True,  # title/artist/album text block
     "lyrics_offset_seconds": 0.0,  # AirPlay-2 buffering compensation, see above
+    "connect_volume_percent": 75,  # AirPlay volume set on every new connection, see above
 }
 
 # Generous enough to cover any receiver's real buffer depth (AirPlay 2's is
@@ -61,6 +72,7 @@ class DisplaySettings(TypedDict):
     show_lyrics: bool
     show_details: bool
     lyrics_offset_seconds: float
+    connect_volume_percent: int
 
 
 def load() -> DisplaySettings:
@@ -78,10 +90,16 @@ def load() -> DisplaySettings:
     except (TypeError, ValueError):
         offset = DEFAULTS["lyrics_offset_seconds"]
     offset = max(-LYRICS_OFFSET_LIMIT_SECONDS, min(LYRICS_OFFSET_LIMIT_SECONDS, offset))
+    try:
+        connect_volume = int(data.get("connect_volume_percent", DEFAULTS["connect_volume_percent"]))
+    except (TypeError, ValueError):
+        connect_volume = DEFAULTS["connect_volume_percent"]
+    connect_volume = max(0, min(100, connect_volume))
     return {
         "show_lyrics": bool(data.get("show_lyrics", DEFAULTS["show_lyrics"])),
         "show_details": bool(data.get("show_details", DEFAULTS["show_details"])),
         "lyrics_offset_seconds": offset,
+        "connect_volume_percent": connect_volume,
     }
 
 
@@ -108,5 +126,14 @@ def set_lyrics_offset(seconds: float) -> DisplaySettings:
     seconds = max(-LYRICS_OFFSET_LIMIT_SECONDS, min(LYRICS_OFFSET_LIMIT_SECONDS, seconds))
     settings = load()
     settings["lyrics_offset_seconds"] = seconds
+    save(settings)
+    return settings
+
+
+def set_connect_volume_percent(percent: int) -> DisplaySettings:
+    """Separate from set_one() -- this one's a clamped int, not a toggle."""
+    percent = max(0, min(100, percent))
+    settings = load()
+    settings["connect_volume_percent"] = percent
     save(settings)
     return settings

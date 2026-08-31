@@ -51,6 +51,24 @@
 </section>
 
 <section class="card">
+  <h2>{{ icon('volume') }} AirPlay connect volume</h2>
+  <p class="muted">
+    Volume set automatically every time a new device connects -- neither Pi has its
+    own physical volume control, so without this, AirPlay starts at whatever level a
+    source app last remembered, sometimes very quiet. Your phone's own volume
+    slider keeps working normally for the rest of that session; this only sets
+    where it starts.
+  </p>
+  <form method="post" action="{{ url_for('set_connect_volume') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="number" name="percent" min="0" max="100" step="1"
+           value="{{ display.connect_volume_percent }}" required>
+    <span class="muted">%</span>
+    <button type="submit" class="primary">Save</button>
+  </form>
+</section>
+
+<section class="card">
   <h2>{{ icon('chip') }} Desk display</h2>
   <p class="muted">
     The lyrics/song-details toggles below are only read by the Zero WH's lighter Qt5
