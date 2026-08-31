@@ -118,6 +118,7 @@ Software/
   receiver.py                cross-platform receiver process supervisor (Pi: no-op; Windows: WSL2)
   sps_bridge.py               re-serves the metadata pipe over TCP (Windows/WSL only)
   display_settings.py           shared show_lyrics/show_details toggle state (JSON under ~/.config), read by app_qt5 and written by the web UI
+  airplay_name.py                reads the AirPlay device name out of shairport-sync.conf, shared by both kiosk apps' "Discoverable: <name>" idle-screen line
   matrix/
     link.py                    serial protocol to the ESP32/HUB75 firmware
     matrix_daemon.py            headless metadata → matrix bridge (no Qt), for constrained hardware

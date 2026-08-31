@@ -119,6 +119,28 @@ command -v apt-get >/dev/null 2>&1 || die "this targets Debian/Raspberry Pi OS (
 [[ -f "$SOFTWARE_DIR/shairport-sync.conf.example" ]] || die \
   "Software/ not found next to this script -- run it from inside a clone of the repo, not a copy of just this file."
 
+# A real incident, not a hypothetical: this repo ended up cloned into two
+# different places on the same Zero WH -- one from `git clone` per this
+# file's own header, one from an ad hoc GitHub zip download elsewhere.
+# Re-running this script from a *different* clone than last time silently
+# repoints the kiosk app's autostart at the new one, while the old clone
+# sits there orphaned and never updated again -- no error, no obvious sign
+# anything's wrong, just a kiosk app that quietly stops receiving fixes.
+# That's exactly how a blank-screen-after-reboot bug traced back days later
+# to stale QML in a clone nobody remembered existed. If an autostart script
+# already points somewhere else, say so now rather than silently orphaning it.
+EXISTING_RUN_SCRIPT="$TARGET_HOME/.local/bin/airplaymatrix-run.sh"
+if [[ -f "$EXISTING_RUN_SCRIPT" ]]; then
+  EXISTING_CD="$(sed -n 's/^cd \(.*\)$/\1/p' "$EXISTING_RUN_SCRIPT" | head -1)"
+  if [[ -n "$EXISTING_CD" && "$EXISTING_CD" != "$SOFTWARE_DIR" ]]; then
+    warn "Existing autostart script points at a DIFFERENT clone:"
+    warn "  ${EXISTING_CD%/Software}"
+    warn "This run will repoint it at $REPO_DIR instead. Once you've"
+    warn "confirmed that works, delete the old one so it can't go stale"
+    warn "and get run by accident: rm -rf \"${EXISTING_CD%/Software}\""
+  fi
+fi
+
 log "Checking sudo access (you'll be prompted for your password once)..."
 sudo -v || die "sudo access is required"
 # Installs below take a few minutes; keep the ticket alive for the whole

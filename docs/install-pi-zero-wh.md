@@ -55,10 +55,11 @@ album art, and duration), with two differences:
   headroom to spare on decoration -- none of these are configurable, they're
   just gone from `app_qt5/`:
   - **Idle/waiting screen**: flat black with plain static white text
-    ("Waiting for AirPlay" / "Receiver Offline"), not `app/`'s pulsing
-    radar-ring animation -- this is the screen the app sits on the most, so
-    it's the one most worth costing the GPU nothing at all. See
-    `app_qt5/qml/NowPlayingView.qml`.
+    ("Waiting for AirPlay" / "Waiting for connection", with a small
+    "Discoverable: <name>" line above showing the name set in the web UI),
+    not `app/`'s pulsing radar-ring animation -- this is the screen the app
+    sits on the most, so it's the one most worth costing the GPU nothing at
+    all. See `app_qt5/qml/NowPlayingView.qml`.
   - **Ambient colour wash**: `app/`'s four soft colour blobs (each its own
     FastBlur pass) fading in over the blurred artwork while playing are
     dropped entirely, not just the Qt6 saturation/brightness grade on top
