@@ -206,7 +206,9 @@ Item {
                     id: visibleText
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    color: Theme.colorTextPrimary
+                    // Swaps to dark ink over light album art -- see
+                    // TrackController.textIsDark / encoder.legible_text_is_dark.
+                    color: app.track.textIsDark ? Theme.colorTextPrimaryOnLight : Theme.colorTextPrimary
                     font.family: Theme.fontFamily
                     font.weight: Font.DemiBold
                     opacity: root.targetOpacity(holder.role)
@@ -247,7 +249,7 @@ Item {
         anchors.centerIn: parent
         visible: !root.hasLyrics
         text: "No lyrics found"
-        color: Theme.colorTextSecondary
+        color: app.track.textIsDark ? Theme.colorTextSecondaryOnLight : Theme.colorTextSecondary
         font.family: Theme.fontFamily
         font.pixelSize: 16 * Theme.uiScale
     }

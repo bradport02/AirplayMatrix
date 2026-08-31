@@ -203,3 +203,65 @@ def quadrant_colors(data: bytes) -> Optional[QuadrantColors]:
         bottom_left=_hex(px[0, 1]),
         bottom_right=_hex(px[1, 1]),
     )
+
+
+# Both builds' Background.qml always layer a plain black scrim at this
+# opacity under the now-playing text (the Pi 5's colour wash and the Zero
+# WH's darkened blurred-artwork alike) -- folding it in here means the
+# light/dark text decision matches what's actually on screen, not the raw
+# artwork colour underneath it.
+BACKGROUND_SCRIM_OPACITY = 0.3
+
+# Mirrors Theme.qml's colorTextPrimary / colorTextPrimaryOnLight. Kept in
+# sync by hand, not imported -- Theme.qml lives in QML, not Python -- since
+# picking between them is exactly what legible_text_is_dark() below needs
+# to get right, not just a hex value used once.
+_LIGHT_TEXT_HEX = "#F5F5F7"
+_DARK_TEXT_HEX = "#15151A"
+
+
+def _blend_toward_black(hex_color: str, opacity: float) -> str:
+    """Byte-level blend, matching how a plain black Rectangle at this
+    opacity composites over hex_color on screen (Qt does this in sRGB byte
+    space, not linear light)."""
+    rgb = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    return "#%02x%02x%02x" % tuple(round(c * (1 - opacity)) for c in rgb)
+
+
+def _relative_luminance(hex_color: str) -> float:
+    """WCAG relative luminance (0 black -- 1 white) of a "#rrggbb" colour."""
+
+    def _linear(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (_linear(int(hex_color[i : i + 2], 16) / 255.0) for i in (1, 3, 5))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast_ratio(hex_a: str, hex_b: str) -> float:
+    """WCAG contrast ratio, 1 (identical) -- 21 (black on white)."""
+    la, lb = _relative_luminance(hex_a), _relative_luminance(hex_b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def legible_text_is_dark(corners: QuadrantColors) -> bool:
+    """Whether the now-playing text (title/artist/lyrics) reads better in
+    dark ink (_DARK_TEXT_HEX) than the UI's default light colour
+    (_LIGHT_TEXT_HEX), given this artwork -- whichever actually contrasts
+    more against the background wins, rather than comparing against some
+    fixed brightness cutoff.
+
+    Averages all four quadrants rather than just the corners nearest a
+    particular text column: the Pi 5 build's colour wash blends all four
+    across the whole window, and the Zero WH build (no colour wash --
+    see Background.qml) uses the blurred artwork uniformly, so one
+    whole-artwork estimate serves both rather than assuming either one's
+    exact layout.
+    """
+    channels = (corners.top_left, corners.top_right, corners.bottom_left, corners.bottom_right)
+    avg = "#%02x%02x%02x" % tuple(
+        round(sum(int(c[i : i + 2], 16) for c in channels) / len(channels)) for i in (1, 3, 5)
+    )
+    scrimmed = _blend_toward_black(avg, BACKGROUND_SCRIM_OPACITY)
+    return _contrast_ratio(_DARK_TEXT_HEX, scrimmed) > _contrast_ratio(_LIGHT_TEXT_HEX, scrimmed)

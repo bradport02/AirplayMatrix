@@ -112,7 +112,9 @@ Item {
 
                 Text {
                     text: app.track.title || "—"
-                    color: Theme.colorTextPrimary
+                    // Swaps to dark ink over light album art -- see
+                    // TrackController.textIsDark / encoder.legible_text_is_dark.
+                    color: app.track.textIsDark ? Theme.colorTextPrimaryOnLight : Theme.colorTextPrimary
                     font.family: Theme.fontFamily
                     font.pixelSize: 28 * Theme.uiScale
                     font.weight: Font.Bold
@@ -121,7 +123,7 @@ Item {
                 }
                 Text {
                     text: [app.track.artist, app.track.album].filter(function (s) { return s.length > 0 }).join(" — ")
-                    color: Theme.colorTextSecondary
+                    color: app.track.textIsDark ? Theme.colorTextSecondaryOnLight : Theme.colorTextSecondary
                     font.family: Theme.fontFamily
                     font.pixelSize: 16 * Theme.uiScale
                     elide: Text.ElideRight

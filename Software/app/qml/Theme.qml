@@ -18,6 +18,12 @@ QtObject {
     readonly property color colorBorder: "#33333B"
     readonly property color colorTextPrimary: "#F5F5F7"
     readonly property color colorTextSecondary: "#9A9AA2"
+    // Now-playing text (title/artist/lyrics) swaps to these over light
+    // album art -- TrackController.textIsDark decides which pair applies;
+    // see encoder.legible_text_is_dark, which mirrors these two hex values
+    // by hand to pick between them.
+    readonly property color colorTextPrimaryOnLight: "#15151A"
+    readonly property color colorTextSecondaryOnLight: "#4A4A54"
     readonly property color colorAccent: "#0A84FF"
 
     readonly property color colorStatusGreen: "#32D74B"

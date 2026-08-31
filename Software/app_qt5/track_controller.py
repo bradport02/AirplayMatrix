@@ -17,7 +17,7 @@ from typing import Callable
 
 from PySide2.QtCore import Property, QObject, QTimer, Signal, Slot
 
-from encoder import quadrant_colors
+from encoder import legible_text_is_dark, quadrant_colors
 from metadata import MetadataItem, MetadataSource, TrackTracker
 
 LOG = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ class TrackController(QObject):
     volumeChanged = Signal()
     artworkChanged = Signal()
     cornersChanged = Signal()
+    textIsDarkChanged = Signal()
     sessionActiveChanged = Signal()
     bridgeConnectedChanged = Signal()
 
@@ -65,6 +66,7 @@ class TrackController(QObject):
         self._bridge_connected = False
         self._artwork_source = ""
         self._corners = ("", "", "", "")  # top-left, top-right, bottom-left, bottom-right
+        self._text_is_dark = False  # whether now-playing text should use dark-on-light ink
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(CONNECTION_POLL_MS)
@@ -121,6 +123,7 @@ class TrackController(QObject):
         if not data:
             self._artwork_source = ""
             self._corners = ("", "", "", "")
+            self._text_is_dark = False
             return
         mime = _sniff_mime(data)
         b64 = base64.b64encode(data).decode("ascii")
@@ -135,6 +138,9 @@ class TrackController(QObject):
             if colors is not None
             else ("", "", "", "")
         )
+        # Whether title/artist/lyrics text should switch to dark ink for
+        # this artwork -- see encoder.legible_text_is_dark's docstring.
+        self._text_is_dark = legible_text_is_dark(colors) if colors is not None else False
 
     def _emit_changes(self, changed: set[str], session_changed: bool) -> None:
         # Qt auto-queues signal delivery to the GUI thread, so emitting here
@@ -155,6 +161,7 @@ class TrackController(QObject):
         if "artwork" in changed or "artwork_revision" in changed:
             self.artworkChanged.emit()
             self.cornersChanged.emit()
+            self.textIsDarkChanged.emit()
         if session_changed:
             LOG.info("AirPlay session %s", "started" if self._session_active else "ended")
             self.sessionActiveChanged.emit()
@@ -186,6 +193,7 @@ class TrackController(QObject):
         if artwork_cleared:
             self.artworkChanged.emit()
             self.cornersChanged.emit()
+            self.textIsDarkChanged.emit()
 
     # -- Q_PROPERTY surface --
 
@@ -234,6 +242,10 @@ class TrackController(QObject):
         with self._lock:
             return self._corners[3]
 
+    def _get_text_is_dark(self) -> bool:
+        with self._lock:
+            return self._text_is_dark
+
     def artwork_bytes(self) -> bytes | None:
         """Raw artwork as delivered (JPEG or PNG), for non-QML consumers
         (MatrixController) that need the original bytes rather than the
@@ -260,6 +272,7 @@ class TrackController(QObject):
     cornerTopRight = Property(str, _get_corner_top_right, notify=cornersChanged)
     cornerBottomLeft = Property(str, _get_corner_bottom_left, notify=cornersChanged)
     cornerBottomRight = Property(str, _get_corner_bottom_right, notify=cornersChanged)
+    textIsDark = Property(bool, _get_text_is_dark, notify=textIsDarkChanged)
     sessionActive = Property(bool, _get_session_active, notify=sessionActiveChanged)
     bridgeConnected = Property(bool, _get_bridge_connected, notify=bridgeConnectedChanged)
 
