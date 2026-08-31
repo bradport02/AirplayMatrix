@@ -21,6 +21,7 @@ from receiver import NullSupervisor, ReceiverSupervisor, WslProcessSupervisor
 
 from .lyrics_controller import LyricsController
 from .matrix_controller import MatrixController
+from .settings_controller import SettingsController
 from .track_controller import TrackController
 
 LOG = logging.getLogger(__name__)
@@ -61,8 +62,9 @@ class AppController(QObject):
         self._device_name_mtime = airplay_name.mtime()
         self._device_name = airplay_name.read()
 
+        self._settings = SettingsController(self)
         self._track = TrackController(source_factory or _default_source_factory(), self)
-        self._lyrics = LyricsController(self._track, self)
+        self._lyrics = LyricsController(self._track, self._settings, self)
         self._matrix = MatrixController(self._track, self)
 
         self._receiver_timer = QTimer(self)
@@ -105,11 +107,15 @@ class AppController(QObject):
     def _get_matrix(self) -> MatrixController:
         return self._matrix
 
+    def _get_settings(self) -> SettingsController:
+        return self._settings
+
     receiverRunning = Property(bool, _get_receiver_running, notify=receiverRunningChanged)
     deviceName = Property(str, _get_device_name, notify=deviceNameChanged)
     track = Property(QObject, _get_track, constant=True)
     lyrics = Property(QObject, _get_lyrics, constant=True)
     matrix = Property(QObject, _get_matrix, constant=True)
+    settings = Property(QObject, _get_settings, constant=True)
 
     @Slot()
     def shutdown(self) -> None:

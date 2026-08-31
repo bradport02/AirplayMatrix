@@ -121,13 +121,21 @@ class LyricsController(QObject):
 
     hasLyrics = Property(bool, _get_has_lyrics, notify=linesChanged)
 
+    def _adjusted(self, position: float) -> float:
+        # Positive lyrics_offset_seconds means "the receiver's buffering
+        # delays audible playback behind prgr's reported position" -- so the
+        # lyric line should switch later, which means looking up an
+        # *earlier* point on the (unshifted) synced-lyrics timeline. See
+        # display_settings.py's docstring.
+        return position - self._settings.lyricsOffsetSeconds
+
     @Slot(float, result=str)
     def lineAt(self, position: float) -> str:
         with self._lock:
             lyrics = self._lyrics
         if not lyrics:
             return ""
-        line = lyrics.line_at(position)
+        line = lyrics.line_at(self._adjusted(position))
         return line.text if line else ""
 
     @Slot(float, result=str)
@@ -136,7 +144,7 @@ class LyricsController(QObject):
             lyrics = self._lyrics
         if not lyrics:
             return ""
-        idx = lyrics.index_at(position) + 1
+        idx = lyrics.index_at(self._adjusted(position)) + 1
         return lyrics.lines[idx].text if 0 <= idx < len(lyrics.lines) else ""
 
     @Slot(float, result=str)
@@ -145,5 +153,5 @@ class LyricsController(QObject):
             lyrics = self._lyrics
         if not lyrics:
             return ""
-        idx = lyrics.index_at(position) - 1
+        idx = lyrics.index_at(self._adjusted(position)) - 1
         return lyrics.lines[idx].text if 0 <= idx < len(lyrics.lines) else ""

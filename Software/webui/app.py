@@ -393,6 +393,23 @@ def set_display_setting(key: str):
     return redirect(url_for("dashboard"))
 
 
+@app.route("/settings/lyrics-offset", methods=["POST"])
+def set_lyrics_offset():
+    # Unlike the two toggles above, both kiosk builds read this one -- see
+    # display_settings.py's docstring for why it exists (AirPlay 2's output
+    # buffering vs. shairport-sync's prgr metadata reporting stream
+    # position, not buffered/audible position).
+    raw = request.form.get("seconds", "").strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        flash(f"\"{raw}\" isn't a number.", "error")
+        return redirect(url_for("dashboard"))
+    settings = display_settings.set_lyrics_offset(seconds)
+    flash(f"Lyrics offset set to {settings['lyrics_offset_seconds']:+.2f}s.", "ok")
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/wifi/connect", methods=["POST"])
 def wifi_connect():
     ssid = request.form.get("ssid", "").strip()

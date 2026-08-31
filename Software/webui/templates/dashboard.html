@@ -51,12 +51,12 @@
 </section>
 
 <section class="card">
-  <h2>{{ icon('chip') }} Desk display (Pi Zero WH / Qt5 build)</h2>
+  <h2>{{ icon('chip') }} Desk display</h2>
   <p class="muted">
-    Only read by the Zero WH's lighter Qt5 kiosk app (<code>app_qt5</code>) -- the Pi 5's
-    full app always shows both. Toggling either takes effect live on the display within a
-    couple seconds, no restart needed, so you can test whether the Zero's single core keeps
-    up with live lyrics without SSH access.
+    The lyrics/song-details toggles below are only read by the Zero WH's lighter Qt5
+    kiosk app (<code>app_qt5</code>) -- the Pi 5's full app always shows both. The lyrics
+    offset further down is read by both. Every setting here takes effect live on the
+    display within a couple seconds, no restart needed.
   </p>
 
   <h3 class="subhead">{{ icon('mic') }} Lyrics</h3>
@@ -88,6 +88,23 @@
       <button type="submit" class="{{ 'danger' if not display.show_details else '' }}">Off</button>
     </form>
   </div>
+
+  <h3 class="subhead">{{ icon('mic') }} Lyrics offset</h3>
+  <p class="muted">
+    Read by <strong>both</strong> kiosk builds. Only needed on a receiver built
+    with AirPlay 2 support -- its output buffering makes lyrics land early
+    relative to shairport-sync's progress metadata, by however much it's
+    currently buffering. Currently <strong>{{ '%+.2f'|format(display.lyrics_offset_seconds) }}s</strong>.
+    Positive delays the lyric line, negative brings it forward; increase the
+    magnitude if lines are still early/late, flip the sign if you overshot.
+  </p>
+  <form method="post" action="{{ url_for('set_lyrics_offset') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="number" name="seconds" min="-10" max="10" step="0.1"
+           value="{{ display.lyrics_offset_seconds }}" required>
+    <span class="muted">seconds</span>
+    <button type="submit" class="primary">Save</button>
+  </form>
 </section>
 
 <section class="card">

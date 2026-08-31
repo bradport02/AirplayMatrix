@@ -1,20 +1,28 @@
 """
-Live-reloading display toggles, exposed to QML.
+Live-reloading lyrics-offset setting, exposed to QML.
 
-Wraps display_settings.py (Software/display_settings.py, shared with the web
-UI). A plain mtime poll rather than QFileSystemWatcher: the web UI writes
-via write-to-tmp-then-rename (see display_settings.save), and
+Unlike app_qt5/settings_controller.py (which this mirrors), this build has
+no lyrics/song-details toggles to expose -- app/ always shows both, see
+display_settings.py's docstring. lyrics_offset_seconds is the one field
+both builds read, so this controller exists just for that: a receiver
+built with AirPlay 2 support buffers audio well beyond classic AirPlay 1,
+and that buffering isn't reflected in shairport-sync's `prgr` metadata that
+TrackController.position() dead-reckons from, so lyrics land early by
+however much the receiver is currently buffering. This is the compensation
+knob, set from the web UI.
+
+A plain mtime poll rather than QFileSystemWatcher: the web UI writes via
+write-to-tmp-then-rename (see display_settings.save), and
 QFileSystemWatcher on Linux frequently stops tracking a path across a
-rename-replace of the file it points at -- the watch would silently go dead
-after the first edit. Polling every POLL_MS sidesteps that entirely, and at
-this interval it's not meaningful CPU cost next to the rest of the app.
+rename-replace of the file it points at -- the watch would silently go
+dead after the first edit. Polling every POLL_MS sidesteps that entirely.
 """
 
 from __future__ import annotations
 
 import logging
 
-from PySide2.QtCore import Property, QObject, QTimer, Signal
+from PySide6.QtCore import Property, QObject, QTimer, Signal
 
 import display_settings
 
@@ -24,8 +32,6 @@ POLL_MS = 2000
 
 
 class SettingsController(QObject):
-    showLyricsChanged = Signal()
-    showDetailsChanged = Signal()
     lyricsOffsetSecondsChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -52,25 +58,11 @@ class SettingsController(QObject):
         self._mtime = mtime
         new = display_settings.load()
         old, self._settings = self._settings, new
-        if old["show_lyrics"] != new["show_lyrics"]:
-            LOG.info("show_lyrics -> %s", new["show_lyrics"])
-            self.showLyricsChanged.emit()
-        if old["show_details"] != new["show_details"]:
-            LOG.info("show_details -> %s", new["show_details"])
-            self.showDetailsChanged.emit()
         if old["lyrics_offset_seconds"] != new["lyrics_offset_seconds"]:
             LOG.info("lyrics_offset_seconds -> %s", new["lyrics_offset_seconds"])
             self.lyricsOffsetSecondsChanged.emit()
 
-    def _get_show_lyrics(self) -> bool:
-        return self._settings["show_lyrics"]
-
-    def _get_show_details(self) -> bool:
-        return self._settings["show_details"]
-
     def _get_lyrics_offset_seconds(self) -> float:
         return self._settings["lyrics_offset_seconds"]
 
-    showLyrics = Property(bool, _get_show_lyrics, notify=showLyricsChanged)
-    showDetails = Property(bool, _get_show_details, notify=showDetailsChanged)
     lyricsOffsetSeconds = Property(float, _get_lyrics_offset_seconds, notify=lyricsOffsetSecondsChanged)

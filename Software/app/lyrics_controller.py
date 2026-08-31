@@ -12,7 +12,11 @@ edits, remasters and live versions.
 
 Lyric-line lookup is pull-based (`lineAt`/`nextLineAt`, called from QML
 alongside `TrackController.currentPosition()`) rather than driven by a
-second internal poll timer.
+second internal poll timer. Positions are shifted by
+`settings.lyricsOffsetSeconds` before lookup -- see
+Software/display_settings.py's docstring for why that exists (an AirPlay
+2-capable receiver's output buffering vs. shairport-sync's `prgr` metadata
+reporting stream position, not audible position).
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
 from lrclib import LyricsFetcher, SyncedLyrics
 
+from .settings_controller import SettingsController
 from .track_controller import TrackController
 
 LOG = logging.getLogger(__name__)
@@ -36,9 +41,15 @@ class LyricsController(QObject):
     resultReady = Signal(object, object)  # (key, SyncedLyrics | None) -- relay onto GUI thread
     linesChanged = Signal()
 
-    def __init__(self, track: TrackController, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        track: TrackController,
+        settings: SettingsController,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._track = track
+        self._settings = settings
         self._lyrics: Optional[SyncedLyrics] = None
         self._lock = threading.Lock()
 
@@ -104,13 +115,20 @@ class LyricsController(QObject):
 
     hasLyrics = Property(bool, _get_has_lyrics, notify=linesChanged)
 
+    def _adjusted(self, position: float) -> float:
+        # Positive lyrics_offset_seconds means "the receiver's buffering
+        # delays audible playback behind prgr's reported position" -- so the
+        # lyric line should switch later, which means looking up an
+        # *earlier* point on the (unshifted) synced-lyrics timeline.
+        return position - self._settings.lyricsOffsetSeconds
+
     @Slot(float, result=str)
     def lineAt(self, position: float) -> str:
         with self._lock:
             lyrics = self._lyrics
         if not lyrics:
             return ""
-        line = lyrics.line_at(position)
+        line = lyrics.line_at(self._adjusted(position))
         return line.text if line else ""
 
     @Slot(float, result=str)
@@ -119,7 +137,7 @@ class LyricsController(QObject):
             lyrics = self._lyrics
         if not lyrics:
             return ""
-        idx = lyrics.index_at(position) + 1
+        idx = lyrics.index_at(self._adjusted(position)) + 1
         return lyrics.lines[idx].text if 0 <= idx < len(lyrics.lines) else ""
 
     @Slot(float, result=str)
@@ -128,5 +146,5 @@ class LyricsController(QObject):
             lyrics = self._lyrics
         if not lyrics:
             return ""
-        idx = lyrics.index_at(position) - 1
+        idx = lyrics.index_at(self._adjusted(position)) - 1
         return lyrics.lines[idx].text if 0 <= idx < len(lyrics.lines) else ""
