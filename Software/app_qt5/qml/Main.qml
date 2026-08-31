@@ -69,6 +69,12 @@ ApplicationWindow {
         StatusBar {
             Layout.fillWidth: true
             Layout.preferredHeight: implicitHeight
+            // Hidden (not just faded) on the idle/waiting screen -- Layouts
+            // skip invisible children entirely (see NowPlayingView.qml's
+            // comment on the same trick), so this also stops the 1s clock
+            // Timer's text updates from being the one thing still moving on
+            // an otherwise-static black screen.
+            visible: app.track.sessionActive
         }
 
         NowPlayingView {

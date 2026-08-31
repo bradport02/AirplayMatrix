@@ -7,68 +7,22 @@ Item {
     property string currentLine: ""
     property string nextLine: ""
 
-    // Idle state -- no AirPlay session open. A soft radar-style pulse
-    // (rings expanding and fading from a centre dot) reads as "listening"
-    // without needing a device glyph or any status chrome; the wording
-    // below is the only thing that changes between "waiting" and "offline".
-    ColumnLayout {
+    // Idle state -- no AirPlay session open. Deliberately static: this is
+    // the screen that's on-air the most (sitting there waiting for a
+    // session to start), so on the Zero WH's single ARM1176 core it's the
+    // one that most needs to cost the GPU nothing at all -- no rings, no
+    // pulsing dot, no Behavior-driven animation, just plain white text on
+    // the flat black idle backdrop (Background.qml/Theme.colorIdleBackground).
+    // The wording is still the only thing that changes between "waiting"
+    // and "offline".
+    Text {
         anchors.centerIn: parent
         visible: !app.track.sessionActive
-        spacing: Theme.spacingXl
-
-        Item {
-            Layout.alignment: Qt.AlignHCenter
-            implicitWidth: 96 * Theme.uiScale
-            implicitHeight: implicitWidth
-
-            Repeater {
-                model: 3
-                delegate: Rectangle {
-                    id: ring
-                    anchors.centerIn: parent
-                    width: parent.width
-                    height: width
-                    radius: width / 2
-                    color: "transparent"
-                    border.width: 1.5 * Theme.uiScale
-                    border.color: Theme.colorTextSecondary
-                    scale: 0.35
-                    opacity: 0
-
-                    SequentialAnimation {
-                        loops: Animation.Infinite
-                        running: app.track.bridgeConnected
-                        PauseAnimation { duration: index * 700 }
-                        ParallelAnimation {
-                            NumberAnimation { target: ring; property: "scale"; from: 0.35; to: 1.0; duration: 2100; easing.type: Easing.OutCubic }
-                            SequentialAnimation {
-                                NumberAnimation { target: ring; property: "opacity"; from: 0; to: 0.45; duration: 300 }
-                                NumberAnimation { target: ring; property: "opacity"; to: 0; duration: 1800; easing.type: Easing.InCubic }
-                            }
-                        }
-                        PauseAnimation { duration: (2 - index) * 700 }
-                    }
-                }
-            }
-
-            Rectangle {
-                anchors.centerIn: parent
-                width: 8 * Theme.uiScale
-                height: width
-                radius: width / 2
-                color: app.track.bridgeConnected ? Theme.colorTextPrimary : Theme.colorTextSecondary
-                Behavior on color { ColorAnimation { duration: Theme.durationBase } }
-            }
-        }
-
-        Text {
-            Layout.alignment: Qt.AlignHCenter
-            text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Receiver Offline"
-            color: Theme.colorTextSecondary
-            font.family: Theme.fontFamily
-            font.pixelSize: 16 * Theme.uiScale
-            font.weight: Font.Medium
-        }
+        text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Receiver Offline"
+        color: Theme.colorTextPrimary
+        font.family: Theme.fontFamily
+        font.pixelSize: 20 * Theme.uiScale
+        font.weight: Font.Medium
     }
 
     // Now-playing state: artwork on the left, details/lyrics on the right.

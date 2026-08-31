@@ -9,10 +9,13 @@ QtObject {
     property real uiScale: 1.0
 
     readonly property color colorBackground: "#0B0B0F"
-    // Flat idle/waiting backdrop (Background.qml) -- deliberately a plain
-    // neutral grey, not a gradient or anything derived from artwork, since
-    // there's no track playing yet to derive anything from.
-    readonly property color colorIdleBackground: "#303034"
+    // Flat idle/waiting backdrop (Background.qml) -- pure black, no
+    // gradient or anything derived from artwork, since there's no track
+    // playing yet to derive anything from. Zero WH build deliberately
+    // black rather than the Pi 5's neutral grey: this is the screen that
+    // sits on-air the most (waiting for a session), so it's the one most
+    // worth being genuinely free of GPU work, not just visually plain.
+    readonly property color colorIdleBackground: "#000000"
     readonly property color colorSurface: "#1C1C22"
     readonly property color colorSurfaceElevated: "#26262E"
     readonly property color colorBorder: "#33333B"

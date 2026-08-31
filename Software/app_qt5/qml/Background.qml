@@ -1,13 +1,11 @@
 import QtQuick 2.15
 import QtGraphicalEffects 1.15
 
-// Full-bleed backdrop. Idle: a flat, solid grey -- no gradient, nothing
-// derived from artwork, because there's no track to derive anything from.
-// Paused: the current artwork, blurred and darkened, standing in for the
-// window chrome. Playing: a handful of soft colour blobs, one per artwork
-// quadrant, fade in over that instead -- an abstraction of the artwork's
-// colours rather than the artwork itself (a literal blurred cover was the
-// previous attempt here and didn't read well).
+// Full-bleed backdrop. Idle: flat black -- no gradient, nothing derived
+// from artwork, because there's no track to derive anything from (also
+// deliberately the cheapest possible thing to have on screen, since it's
+// the state this build sits in the most). Paused/playing: the current
+// artwork, blurred and darkened, standing in for the window chrome.
 //
 // Qt5 note: this is a port of app/qml/Background.qml, which uses Qt6's
 // MultiEffect for both the blur and a saturation/brightness colour-grade in
@@ -20,34 +18,18 @@ import QtGraphicalEffects 1.15
 // right below already does the legibility work the brightness tweak was
 // for; losing the saturation dip is a minor, deliberate look difference,
 // not a bug.
+//
+// This Qt5 build also drops app/qml/Background.qml's ambient colour-wash
+// layer entirely (four extra soft colour blobs, each its own FastBlur pass,
+// fading in on top of the blurred artwork while playing) rather than
+// porting it -- that's four continuous GPU blur passes stacked on top of
+// the artwork blur below, for a purely decorative effect, which is real
+// per-frame cost the Zero WH's ARM1176/VideoCore IV can't spare on top of
+// shairport-sync's real-time audio path. The blurred-artwork backdrop
+// (kept below) is the one blur pass that's carrying its own weight -- it's
+// the actual chrome, not an extra layer on top of it.
 Item {
     id: root
-
-    readonly property bool cornersAvailable: app.track.cornerTopLeft !== ""
-    readonly property color cTL: cornersAvailable ? app.track.cornerTopLeft : Theme.colorIdleBackground
-    readonly property color cTR: cornersAvailable ? app.track.cornerTopRight : Theme.colorIdleBackground
-    readonly property color cBL: cornersAvailable ? app.track.cornerBottomLeft : Theme.colorIdleBackground
-    readonly property color cBR: cornersAvailable ? app.track.cornerBottomRight : Theme.colorIdleBackground
-
-    // A single blurred, roughly circular patch of colour. Deliberately a
-    // leaf item (no children of its own) as the FastBlur source -- compare
-    // AlbumArt.qml's shadow shape -- a source item with children renders
-    // blank here instead of blurring.
-    component ColorBlob: Item {
-        property alias color: fill.color
-        Rectangle {
-            id: fill
-            anchors.fill: parent
-            radius: width / 2
-            visible: false
-            Behavior on color { ColorAnimation { duration: 900 } }
-        }
-        FastBlur {
-            anchors.fill: fill
-            source: fill
-            radius: 90 * Theme.uiScale
-        }
-    }
 
     Rectangle {
         anchors.fill: parent
@@ -86,59 +68,12 @@ Item {
         Behavior on opacity { NumberAnimation { duration: Theme.durationSlow } }
     }
 
-    // Ambient colour wash -- only while actually playing (not merely an
-    // open, paused session), so the blurred-artwork look above is what
-    // shows the rest of the time. Four overlapping blobs, one per artwork
-    // quadrant, pulled in from the true corners so they blend into each
-    // other across the middle rather than leaving the centre empty.
-    Item {
-        id: colorWash
-        anchors.fill: parent
-        opacity: (app.track.playing && root.cornersAvailable) ? 1.0 : 0
-        Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.OutCubic } }
-
-        readonly property real blobSize: Math.max(width, height) * 0.85
-
-        ColorBlob {
-            color: root.cTL
-            width: colorWash.blobSize; height: width
-            x: colorWash.width * 0.22 - width / 2
-            y: colorWash.height * 0.22 - height / 2
-        }
-        ColorBlob {
-            color: root.cTR
-            width: colorWash.blobSize; height: width
-            x: colorWash.width * 0.78 - width / 2
-            y: colorWash.height * 0.22 - height / 2
-        }
-        ColorBlob {
-            color: root.cBL
-            width: colorWash.blobSize; height: width
-            x: colorWash.width * 0.22 - width / 2
-            y: colorWash.height * 0.78 - height / 2
-        }
-        ColorBlob {
-            color: root.cBR
-            width: colorWash.blobSize; height: width
-            x: colorWash.width * 0.78 - width / 2
-            y: colorWash.height * 0.78 - height / 2
-        }
-
-        // Same dark-legibility scrim as the blurred-art layer, so text
-        // contrast doesn't depend on how bright the sampled colours are.
-        Rectangle {
-            anchors.fill: parent
-            color: "black"
-            opacity: 0.3
-        }
-    }
-
-    // Vignette so the top/bottom bars read clearly over artwork/colour --
-    // only relevant once there's actually a session's worth of content
-    // behind it. Idle is meant to be flat, solid grey with nothing layered
-    // over it at all, so this stays fully off there rather than leaving a
-    // faint light/dark/light banding across a background that's supposed
-    // to read as one plain colour.
+    // Vignette so the top/bottom bars read clearly over artwork -- only
+    // relevant once there's actually a session's worth of content behind
+    // it. Idle is meant to be flat black with nothing layered over it at
+    // all, so this stays fully off there rather than leaving a faint
+    // light/dark/light banding across a background that's supposed to
+    // read as one plain colour.
     Rectangle {
         anchors.fill: parent
         opacity: app.track.sessionActive ? 1 : 0
