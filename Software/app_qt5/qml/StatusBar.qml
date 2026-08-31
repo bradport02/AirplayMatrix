@@ -25,7 +25,10 @@ Item {
 
     Timer {
         interval: 1000
-        running: true
+        // root.visible tracks the sessionActive binding Main.qml puts on
+        // this component -- no point waking up once a second to recompute
+        // a clock string nothing is displaying on the idle/waiting screen.
+        running: root.visible
         repeat: true
         triggeredOnStart: true
         onTriggered: clockText.text = Qt.formatDateTime(new Date(), "h:mm AP · ddd, MMM d")

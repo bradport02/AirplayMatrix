@@ -48,17 +48,26 @@ album art, and duration), with two differences:
     flip it on from the web UI and watch `top`/`journalctl -u
     shairport-sync -f` to see whether this specific ARM1176 can actually
     carry it, without needing SSH or a reboot to try.
-  - Everything else -- background, blurred-artwork wash, album art,
-    scrub bar/duration, LED matrix output -- behaves identically to `app/`
-    and isn't optional.
-- `QtGraphicalEffects` (Qt5) stands in for `QtQuick.Effects`'s `MultiEffect`
-  (Qt6-only) for the background blur and album-art shadow. One small look
-  difference falls out of that: the Qt6 build's subtle saturation/
-  brightness grade on the blurred background is dropped rather than ported,
-  since QtGraphicalEffects has no single-pass equivalent and stacking a
-  second full-screen shader purely for that grade is exactly the kind of
-  extra GPU work this build can't spend on unproven hardware. See
-  `app_qt5/qml/Background.qml`'s comment for the detail.
+  - Album art, scrub bar/duration, and LED matrix output behave identically
+    to `app/` and aren't optional.
+- Beyond that pair of toggles, this build also trims a few things `app/`
+  always does, on the assumption that a single ARM1176 core has no GPU
+  headroom to spare on decoration -- none of these are configurable, they're
+  just gone from `app_qt5/`:
+  - **Idle/waiting screen**: flat black with plain static white text
+    ("Waiting for AirPlay" / "Receiver Offline"), not `app/`'s pulsing
+    radar-ring animation -- this is the screen the app sits on the most, so
+    it's the one most worth costing the GPU nothing at all. See
+    `app_qt5/qml/NowPlayingView.qml`.
+  - **Ambient colour wash**: `app/`'s four soft colour blobs (each its own
+    FastBlur pass) fading in over the blurred artwork while playing are
+    dropped entirely, not just the Qt6 saturation/brightness grade on top
+    of them -- four extra continuous GPU blur passes stacked on a single
+    ARM1176 core is the kind of cost this build can't spend. The blurred,
+    darkened artwork backdrop itself is kept (`QtGraphicalEffects`' FastBlur
+    stands in for `QtQuick.Effects`'s Qt6-only `MultiEffect` there and for
+    the album-art shadow). See `app_qt5/qml/Background.qml`'s comment for
+    the detail.
 
 As with the Qt6 attempt this replaces, whether a single 1GHz ARM1176 core
 can run shairport-sync's real-time audio path, HDMI-CEC handling, *and* a
