@@ -59,6 +59,7 @@ step() { printf '\n%s== %s ==%s\n' "$c_info" "$*" "$c_off"; }
 DISPLAY_MODE=auto   # auto | kiosk | headless
 QT_MAJOR=auto        # auto | 5 | 6  (only consulted when DISPLAY_MODE=kiosk)
 DO_LAUNCH=1
+DO_POLISH=1          # only consulted when DISPLAY_MODE=kiosk && QT_MAJOR=5
 
 usage() {
   cat <<'EOF'
@@ -73,6 +74,15 @@ Usage: ./setup.sh [options]
   --qt6            Force the Qt6/PySide6 build of the kiosk app (app/).
                     Auto-detected from `uname -m` by default: aarch64 -> Qt6
                     (has official PySide6 wheels), anything else -> Qt5.
+  --no-polish      Skip the Zero WH boot-time/idle-screen polish step (Qt5
+                    kiosk builds only -- see docs/install-pi-zero-wh.md's
+                    "Boot time and idle-screen polish" section for exactly
+                    what this disables: cloud-init, Bluetooth, disk
+                    auto-mount, RPi Connect screen sharing, the taskbar/
+                    desktop-icon autostart, the boot splash, and the mouse
+                    cursor). Pass this if you want any of those left alone,
+                    e.g. you're actively using RPi Connect screen sharing on
+                    this device.
   --no-launch      Do everything except launch the app / reboot hint at the
                     end -- useful if you're scripting this further.
   -h, --help       This.
@@ -85,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --headless) DISPLAY_MODE=headless ;;
     --qt5) QT_MAJOR=5 ;;
     --qt6) QT_MAJOR=6 ;;
+    --no-polish) DO_POLISH=0 ;;
     --no-launch) DO_LAUNCH=0 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (see --help)" ;;
@@ -412,6 +423,170 @@ if n == 0:
 open(path, "w", encoding="utf-8").write(new_text)
 print(f"Added Shift+X quit keybind to {path}")
 PYEOF
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Zero WH boot-time / idle-screen polish (kiosk, Qt5 only)
+# ---------------------------------------------------------------------------
+#
+# Everything below was worked out and verified live on real Zero WH
+# hardware, not theorised -- see docs/install-pi-zero-wh.md's "Boot time and
+# idle-screen polish" section for the measurements and reasoning behind each
+# piece. Scoped to the Qt5 kiosk path specifically: none of this has been
+# tried on the Pi 5/Qt6 build, which doesn't share the Zero's single-core/
+# 512MB constraints that motivate it. Idempotent like everything else here --
+# safe to re-run, and every edit either checks first or is naturally a no-op
+# the second time (a sed pattern that only matches an as-yet-uncommented
+# line, a "not already present" grep before appending, etc.).
+
+if [[ "$DISPLAY_MODE" == kiosk && "$QT_MAJOR" == 5 && "$DO_POLISH" -eq 1 ]]; then
+  step "6: Zero WH boot-time / idle-screen polish"
+
+  # -- cloud-init: first-boot customisation (Raspberry Pi Imager's
+  # hostname/user/Wi-Fi/SSH seed) has already run by the time this script
+  # is -- disabling it here is the documented, official mechanism
+  # (ds-identify's is_disabled() checks this file before anything else),
+  # and it alone was ~40s of every single boot on a Zero WH doing nothing.
+  log "Disabling cloud-init (first-boot customisation already applied; ~40s/boot saved)"
+  sudo touch /etc/cloud/cloud-init.disabled
+
+  # -- netplan: ships some packaged config world-readable (0644) when
+  # netplan's own security check wants 0600 on anything it manages. Harmless
+  # content-wise here, but the permission mismatch was observed driving a
+  # ~55s NetworkManager reload storm at boot (four separate `systemctl
+  # reload NetworkManager.service` cycles, each ~9-15s on this CPU).
+  log "Tightening netplan config file permissions to 0600"
+  for f in /lib/netplan/*.yaml /etc/netplan/*.yaml; do
+    if [[ -f "$f" ]]; then
+      sudo chmod 600 "$f"
+    fi
+  done
+
+  # -- background services this kiosk never needs: Bluetooth (no BT
+  # hardware in use), disk auto-mount (udisks2 -- no removable media),
+  # RPi Connect's screen sharing (wayvnc, not its remote-shell half) and the
+  # generic system wayvnc/wayvnc-control pair, and two Pi 5-only hardware
+  # probes that no-op on a Zero WH's BCM2835 but still cost boot time here.
+  log "Disabling unused background services (Bluetooth, disk auto-mount, screen sharing, Pi 5-only probes)"
+  ZERO_WH_UNNEEDED_SERVICES=(bluetooth udisks2 rp1-test glamor-test wayvnc wayvnc-control)
+  for unit in "${ZERO_WH_UNNEEDED_SERVICES[@]}"; do
+    if systemctl list-unit-files "${unit}.service" &>/dev/null; then
+      sudo systemctl disable --now "${unit}.service" 2>/dev/null || true
+    fi
+  done
+  # rpi-connect-wayvnc is a --user unit and rpi-connect itself is a per-user
+  # CLI, not root-level -- both need an active user session/bus to reach,
+  # which may not exist yet on a fresh headless SSH run before the first
+  # desktop login. Best-effort: applies immediately if a session is up,
+  # otherwise simply doesn't regress anything (RPi Connect's remote *shell*
+  # is untouched either way -- only screen sharing is being turned off).
+  systemctl --user disable --now rpi-connect-wayvnc.service &>/dev/null || true
+  command -v rpi-connect >/dev/null 2>&1 && rpi-connect vnc off &>/dev/null || true
+
+  # -- taskbar + desktop icons: invisible anyway underneath a full-screen
+  # kiosk window, pure RAM cost. The sed only matches the as-yet-uncommented
+  # line, so this is naturally idempotent on a re-run.
+  log "Disabling the desktop taskbar/icon autostart (invisible behind the full-screen kiosk anyway)"
+  LABWC_AUTOSTART_SYS=/etc/xdg/labwc/autostart
+  if [[ -f "$LABWC_AUTOSTART_SYS" ]]; then
+    sudo sed -i \
+      -e "s|^/usr/bin/lwrespawn /usr/bin/pcmanfm-pi \&|# (disabled by AirplayMatrix setup.sh -- RAM headroom on the Zero WH) /usr/bin/lwrespawn /usr/bin/pcmanfm-pi \&|" \
+      -e "s|^/usr/bin/lwrespawn /usr/bin/wf-panel-pi \&|# (disabled by AirplayMatrix setup.sh -- RAM headroom on the Zero WH) /usr/bin/lwrespawn /usr/bin/wf-panel-pi \&|" \
+      "$LABWC_AUTOSTART_SYS"
+  fi
+
+  # -- boot splash: replace the Raspberry Pi firmware rainbow splash and
+  # Plymouth's graphical theme with a blank console + a plain static
+  # message (Software/boot/airplaymatrix-boot-message.sh), rather than a
+  # custom Plymouth theme -- that would need an initramfs rebuild, real risk
+  # on a device with no physical console to recover it with if that goes
+  # wrong. This is cmdline.txt/config.txt only, always reversible by editing
+  # those two files back (backups are saved alongside them below).
+  log "Installing the boot-time placeholder message (tty1) and disabling the graphical splash"
+  sudo install -m 0755 "$SOFTWARE_DIR/boot/airplaymatrix-boot-message.sh" /usr/local/bin/airplaymatrix-boot-message.sh
+  sudo install -m 0644 "$SOFTWARE_DIR/boot/airplaymatrix-boot-message.service" /etc/systemd/system/airplaymatrix-boot-message.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable airplaymatrix-boot-message.service
+
+  BOOT_DIR=/boot/firmware
+  [[ -d "$BOOT_DIR" ]] || BOOT_DIR=/boot
+
+  CONFIG_FILE="$BOOT_DIR/config.txt"
+  if [[ -f "$CONFIG_FILE" ]] && ! grep -qx "disable_splash=1" "$CONFIG_FILE"; then
+    sudo cp "$CONFIG_FILE" "$CONFIG_FILE.bak-$(date +%Y%m%d%H%M%S)"
+    if grep -q "^\[all\]" "$CONFIG_FILE"; then
+      sudo sed -i "/^\[all\]/a disable_splash=1" "$CONFIG_FILE"
+    else
+      printf '\n[all]\ndisable_splash=1\n' | sudo tee -a "$CONFIG_FILE" >/dev/null
+    fi
+  fi
+
+  CMDLINE_FILE="$BOOT_DIR/cmdline.txt"
+  if [[ -f "$CMDLINE_FILE" ]]; then
+    # `read` returns non-zero at EOF with no trailing newline -- true for
+    # cmdline.txt on every image observed -- despite populating the array
+    # correctly; the `|| true` only swallows that specific harmless case.
+    read -r -a _cmdline_tokens < "$CMDLINE_FILE" || true
+    _cmdline_new=()
+    for t in "${_cmdline_tokens[@]}"; do
+      # splash and plymouth.ignore-serial-consoles are what we're deliberately
+      # replacing (see the .sh's comment for why); everything else the image
+      # shipped with (console=, root=, rootfstype=, fsck.repair=, cfg80211
+      # regdom, ...) is left exactly as-is, in whatever order it was in.
+      case "$t" in
+        splash|plymouth.ignore-serial-consoles) continue ;;
+        *) _cmdline_new+=("$t") ;;
+      esac
+    done
+    for want in quiet loglevel=1 systemd.show_status=false plymouth.enable=0 logo.nologo vt.global_cursor_default=0; do
+      _present=0
+      for t in "${_cmdline_new[@]}"; do
+        if [[ "$t" == "$want" ]]; then
+          _present=1
+          break
+        fi
+      done
+      if [[ "$_present" -eq 0 ]]; then
+        _cmdline_new+=("$want")
+      fi
+    done
+    _cmdline_joined="${_cmdline_new[*]}"
+    if [[ "$_cmdline_joined" != "$(cat "$CMDLINE_FILE")" ]]; then
+      sudo cp "$CMDLINE_FILE" "$CMDLINE_FILE.bak-$(date +%Y%m%d%H%M%S)"
+      printf '%s' "$_cmdline_joined" | sudo tee "$CMDLINE_FILE" >/dev/null
+    fi
+  fi
+
+  # -- mouse cursor: labwc's own default arrow, visible during the gap
+  # between the compositor starting and the Qt app's own
+  # setOverrideCursor(BlankCursor) call (see app_qt5/main.py) taking effect.
+  # A hand-built, fully-transparent Xcursor theme closes that gap too --
+  # see the generator script's docstring for why not xcursorgen (not
+  # packaged for this device's 32-bit armhf archive).
+  log "Installing a blank cursor theme (hides the pointer during the app-loading gap)"
+  python3 "$SOFTWARE_DIR/boot/make_blank_cursor_theme.py"
+  ENV_FILE="$TARGET_HOME/.config/labwc/environment"
+  mkdir -p "$(dirname "$ENV_FILE")"
+  touch "$ENV_FILE"
+  if ! grep -qxF "XCURSOR_THEME=Blank" "$ENV_FILE"; then
+    echo "XCURSOR_THEME=Blank" >> "$ENV_FILE"
+  fi
+  if ! grep -qxF "XCURSOR_SIZE=24" "$ENV_FILE"; then
+    echo "XCURSOR_SIZE=24" >> "$ENV_FILE"
+  fi
+
+  # -- persistent journal logging: volatile (/run) by default, which meant
+  # every reboot -- including the ones used to *recover* from a problem --
+  # destroyed the very evidence needed to diagnose it. Cheap to keep.
+  log "Enabling persistent journal logging (survives a reboot -- needed to debug anything that recurs)"
+  sudo mkdir -p /var/log/journal
+  sudo systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+  if ! grep -q "^Storage=persistent" /etc/systemd/journald.conf 2>/dev/null; then
+    sudo sed -i "s/^\[Journal\]\$/[Journal]\nStorage=persistent/" /etc/systemd/journald.conf
+    sudo systemctl restart systemd-journald
+  fi
+
+  log "Zero WH polish applied -- a reboot is needed for the boot-splash/cursor changes to take effect."
 fi
 
 # ---------------------------------------------------------------------------

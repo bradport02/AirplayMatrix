@@ -1,0 +1,15 @@
+[Unit]
+Description=AirplayMatrix plain boot placeholder message (tty1)
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/airplaymatrix-boot-message.sh
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+
+[Install]
+WantedBy=sysinit.target

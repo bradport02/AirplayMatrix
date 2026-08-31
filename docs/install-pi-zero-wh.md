@@ -271,6 +271,99 @@ sudo journalctl -u airplaymatrix-matrix -f
   either should change what's on screen within a couple of seconds with no
   restart.
 
+## Boot time and idle-screen polish (Plan A only)
+
+`setup.sh` applies all of this automatically on the Qt5 kiosk path (pass
+`--no-polish` to skip it -- see `./setup.sh --help`). It's written up here
+because every number below was measured live on real Zero WH hardware, not
+theorised, and because a couple of these are worth understanding before you
+just trust a script to edit `cmdline.txt` for you.
+
+**Boot time.** A stock Raspberry Pi OS Desktop image on this hardware took
+**3min 45s** from power-on to the kiosk app appearing. Two things accounted
+for nearly all of it:
+
+- **cloud-init** (`cloud-init-local`/`-main`/`-network`/`-config`/`-final`,
+  ~43s combined) -- this is what Raspberry Pi Imager's first-boot
+  customisation (hostname/user/Wi-Fi/SSH) runs on top of. It has nothing
+  left to do on every boot after the first, but re-detects that from
+  scratch each time regardless. `sudo touch /etc/cloud/cloud-init.disabled`
+  is the officially documented way to skip it (checked by `ds-identify`
+  before any real detection work) -- safe on a single fixed-purpose device
+  that will never be re-seeded with new cloud-init user-data.
+- **A NetworkManager/netplan reload storm** (~55s) -- four separate
+  `systemctl reload NetworkManager.service` cycles, ~15s apart, each
+  costing ~9s on this CPU. Traced to `/lib/netplan/00-network-manager-all.yaml`
+  shipping world-readable (0644) when netplan's own security check wants
+  0600 on anything it manages -- `sudo chmod 600` on the netplan-owned
+  YAML files fixed it. (A *second*, larger NetworkManager cost -- the
+  reload cycles' actual reconciliation work, ~87s independent of the
+  permission issue -- was investigated but deliberately left alone: fixing
+  it further would mean changing how NetworkManager/netplan manage the one
+  interface this device is reachable through, and getting that wrong with
+  no physical console means a full re-flash to recover. Not worth it for a
+  device you only reach over Wi-Fi.)
+
+Together those two got boot down to **2min 13s**. A further ~20s came from
+disabling a handful of background services this kiosk never needs --
+Bluetooth, disk auto-mount (`udisks2`), RPi Connect's screen sharing
+(`wayvnc`, not its remote-shell half, which is left alone), the generic
+system `wayvnc`/`wayvnc-control` pair, and two Pi 5-only hardware-probe
+services (`rp1-test`, `glamor-test`) that no-op on this SoC but still cost
+boot time here. The same services were also worth ~80MB of RAM back at
+runtime -- see the next section.
+
+**RAM.** This build runs on a **512MB** device, of which roughly 426MB is
+actually usable after the GPU memory split. A stock Desktop image's full
+session -- taskbar, desktop icons, RPi Connect, PolicyKit auth agent, gvfs
+auto-mount, xdg-desktop-portal -- was measured using enough of that to push
+the box into **active swap** during playback (up to 140MB swapped, on an SD
+card), which is almost certainly what a stuttering/dropping AirPlay session
+on this hardware actually is: real-time audio and networking both stalling
+on synchronous SD-card I/O, not a CPU shortage. Disabling the background
+services above, plus the taskbar/desktop-icon autostart lines in
+`/etc/xdg/labwc/autostart` (invisible underneath the full-screen kiosk
+window anyway), took swap usage from ~140MB down to ~70MB under the same
+load. If you still see audio glitches or failed AirPlay reconnects after
+this, check `free -h` and `vmstat 1` for swap activity before assuming it's
+a lyrics/CPU problem -- and check `journalctl` (now persistent across
+reboots, see below) for what shairport-sync/avahi were doing at the time.
+
+**Boot splash and idle cursor.** The Raspberry Pi rainbow splash and
+Plymouth's graphical theme are both disabled --
+`Software/boot/airplaymatrix-boot-message.sh`, running as a plain systemd
+service on `tty1`, shows a static "AirPlay Matrix is booting..." message
+with a cycling `...` instead. This is deliberately *not* a custom Plymouth
+theme: that would need the theme baked into the initramfs to show anything
+before the root filesystem is even mounted, and rebuilding an initramfs on
+a device with no physical console to recover it with if that goes wrong is
+a real risk this project isn't taking for a cosmetic feature. The
+trade-off worth knowing: Plymouth's graphical splash was also *hiding*
+some kernel driver spam (mostly `dwc_otg`/`vc4-drm` messages, harmless but
+noisy) and systemd's own `Starting X...`/`Finished X...` status lines --
+disabling Plymouth without separately silencing those leaks them straight
+to the console. `loglevel=1` and `systemd.show_status=false` on the kernel
+command line handle that independently of Plymouth. One thing deliberately
+left alone: a brief `fsck`/`rootfs: clean...` line, since that's the
+filesystem integrity check writing directly to console (not through the
+kernel log, so `loglevel` can't touch it) -- silencing that would mean
+silencing a real safety check, not just cosmetics.
+
+Separately, the mouse pointer that briefly appears while the kiosk app
+loads is labwc's own default cursor, shown in the gap between the
+compositor starting and the app's own `setOverrideCursor(BlankCursor)`
+call (`app_qt5/main.py`) taking effect. `Software/boot/make_blank_cursor_theme.py`
+hand-builds a minimal, fully-transparent Xcursor theme (no `xcursorgen`
+dependency -- not packaged for this device's 32-bit armhf archive) and
+points labwc at it via `XCURSOR_THEME`/`XCURSOR_SIZE` in
+`~/.config/labwc/environment`, closing that gap too.
+
+**Debuggability.** Journal storage is volatile (`/run`) by default on this
+image, which means every reboot -- including the ones used to *recover*
+from a problem -- destroys the evidence needed to diagnose it.
+`Storage=persistent` in `/etc/systemd/journald.conf` (plus creating
+`/var/log/journal`) fixes that for a negligible amount of SD card space.
+
 ## If you outgrow the Zero WH
 
 The Wi-Fi/CEC/matrix pipeline software is identical between builds -- if

@@ -25,9 +25,12 @@ That's the whole install. It:
 1. **Detects the hardware** -- a desktop/labwc session present means the Qt
    kiosk display, nothing means the headless matrix daemon; on the kiosk
    path, `uname -m` picks the Qt6 build (aarch64) or the Qt5 build
-   (everything else, e.g. Pi Zero WH). Override with `--kiosk` / `--headless`
-   / `--qt5` / `--qt6` if you want something other than the default for this
-   hardware; `./setup.sh --help` lists all of them.
+   (everything else, e.g. Pi Zero WH), which also gets a round of boot-time/
+   idle-screen polish (cloud-init, background services, boot splash, mouse
+   cursor -- see install-pi-zero-wh.md). Override with `--kiosk` /
+   `--headless` / `--qt5` / `--qt6` / `--no-polish` if you want something
+   other than the default for this hardware; `./setup.sh --help` lists all
+   of them.
 2. **Checks for and removes any previous install** -- stops/disables
    whatever's already running before reinstalling, and if you're switching a
    device between the kiosk display and headless (or back), cleanly tears
@@ -134,6 +137,11 @@ Software/
       LyricsController's fetching both gate on them
   labwc/
     autostart.example, rc.xml.snippet.txt   desktop autostart + Shift+X keybind for the kiosk app
+  boot/
+    airplaymatrix-boot-message.sh, .service    Zero WH kiosk only: blank-screen boot placeholder (tty1),
+      replacing the Raspberry Pi splash + Plymouth's graphical theme -- see install-pi-zero-wh.md
+    make_blank_cursor_theme.py    hand-built, fully-transparent Xcursor theme -- hides labwc's default
+      pointer during the app-loading gap, no xcursorgen dependency
 
 docs/
   install-full-pi.md       full desktop build (reference: this is what the running Pi 5 unit uses)
@@ -162,6 +170,9 @@ docs/
 - The web UI's `/matrix` page (power/brightness/colour/mode) is UI-only --
   the ESP32 firmware is currently a passive image-frame sink with no command
   channel, so none of those controls are wired to the panel yet.
-- `app_qt5/` (the Pi Zero WH kiosk build) hasn't been run on real Zero WH
-  hardware -- see docs/install-pi-zero-wh.md for exactly what's unverified
-  and how to check it on your own unit.
+- `app_qt5/` (the Pi Zero WH kiosk build) has been run and tuned on real
+  Zero WH hardware -- lyrics/song-details toggles, boot time (3min 45s down
+  to ~2min 13s), idle RAM/swap pressure, and the boot splash/cursor are all
+  covered in docs/install-pi-zero-wh.md, including the one thing that was
+  deliberately *not* chased further (a NetworkManager/netplan reload cost)
+  and why.
