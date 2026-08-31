@@ -1,13 +1,25 @@
 # AirplayMatrix
 
-A Raspberry Pi that shows up as an AirPlay speaker, plays the audio out over
-HDMI/analog, and pushes the currently-playing album art to a 64x64 HUB75 LED
-matrix (driven by a companion ESP32 board over USB serial). It also turns
-the TV on/off over HDMI-CEC when a session starts/stops, forwards TV-remote
-button presses into AirPlay transport controls, advertises the AirPlay
-device name as its CEC OSD name (shown as the HDMI input's label by
-receivers/TVs that query it -- support varies by brand/firmware), and
-exposes a small password-protected web UI for day-to-day settings.
+A Raspberry Pi that shows up as an AirPlay 2 speaker, plays the audio out
+over HDMI/analog, and pushes the currently-playing album art to a 64x64
+HUB75 LED matrix (driven by a companion ESP32 board over USB serial). It
+also turns the TV on/off over HDMI-CEC when a session starts/stops, forwards
+TV-remote button presses into AirPlay transport controls, advertises the
+AirPlay device name as its CEC OSD name (shown as the HDMI input's label by
+receivers/TVs that query it -- support varies by brand/firmware), sets
+AirPlay volume to a configured level on every new connection, and exposes a
+small password-protected web UI for day-to-day settings.
+
+AirPlay 2 (as opposed to classic AirPlay 1, which is all `apt`'s
+shairport-sync package supports) is what makes this behave like a real
+AirPlay-2-certified speaker/TV to iOS: opening another app on the phone
+while AirPlaying doesn't interrupt the stream, since iOS treats an
+AirPlay-2 destination as an app-owned route rather than "whatever's
+currently loudest." `setup.sh` builds it from source by default (`nqptp` +
+shairport-sync `--with-airplay-2`, installed to `/usr/local/bin` alongside
+the untouched apt package as an instant fallback) -- pass `--classic-airplay`
+to skip that and stay on the simpler, better-tested classic-only apt
+package instead.
 
 ## Quick start
 
@@ -39,10 +51,13 @@ That's the whole install. It:
    down whichever one you're switching *away* from so the two never end up
    fighting over the ESP32's one USB serial port. **Safe to re-run** at any
    time -- nothing here touches Wi-Fi credentials, the web UI's admin
-   password, or the lyrics/song-details toggles.
-3. **Installs and starts everything**: AirPlay receive, HDMI-CEC, the
-   settings web UI, and the display (kiosk app + its autostart routine, or
-   the headless daemon).
+   password, or the lyrics/song-details/lyrics-offset/connect-volume
+   settings.
+3. **Installs and starts everything**: AirPlay receive (classic AirPlay 1
+   via apt, plus AirPlay 2 built from source by default -- pass
+   `--classic-airplay` to skip that and stay apt-only, or `--rebuild-airplay2`
+   to force a fresh build on a re-run), HDMI-CEC, the settings web UI, and
+   the display (kiosk app + its autostart routine, or the headless daemon).
 4. **Prints the web UI's login URL and, on a first install, its
    admin password** (shown once, ever -- change it from the Account page
    after logging in).
@@ -75,7 +90,7 @@ passthrough, LED matrix output, and the settings web UI.
 ```
                      ┌────────────────────────────┐
    AirPlay client ──▶│  shairport-sync (systemd)  │──▶ audio out (HDMI/USB DAC)
-                     │  + metadata FIFO           │
+                     │  + metadata FIFO           │◀── nqptp (AirPlay 2 clock sync)
                      └─────────────┬──────────────┘
                                    │ /tmp/shairport-sync-metadata
                     ┌──────────────┼───────────────────────┐
@@ -95,6 +110,8 @@ passthrough, LED matrix output, and the settings web UI.
 
   Settings: airplaymatrix-webui (Flask, :8080) → sudo → airplaymatrix-privileged.py
             (device name, Wi-Fi, TV timeout, hostname, restarts, reboot)
+            → display_settings.py's JSON (lyrics offset, AirPlay connect volume,
+              lyrics/song-details toggles) needs no sudo -- same unprivileged user
 ```
 
 The desk-display app (whichever Qt build), and `matrix_daemon.py`, are
@@ -117,14 +134,14 @@ Software/
   lrclib.py                 lyrics lookup (used by the desk-display app only)
   receiver.py                cross-platform receiver process supervisor (Pi: no-op; Windows: WSL2)
   sps_bridge.py               re-serves the metadata pipe over TCP (Windows/WSL only)
-  display_settings.py           shared show_lyrics/show_details toggle state (JSON under ~/.config), read by app_qt5 and written by the web UI
+  display_settings.py           shared show_lyrics/show_details/lyrics_offset_seconds/connect_volume_percent state (JSON under ~/.config), written by the web UI; read by app_qt5 (all four), app/ (lyrics_offset_seconds only), and airplay-tv-power.sh (connect_volume_percent only)
   airplay_name.py                reads the AirPlay device name out of shairport-sync.conf, shared by both kiosk apps' "Discoverable: <name>" idle-screen line
   matrix/
     link.py                    serial protocol to the ESP32/HUB75 firmware
     matrix_daemon.py            headless metadata → matrix bridge (no Qt), for constrained hardware
     airplaymatrix-matrix.service
   cec/
-    airplay-tv-power.sh          TV power on/standby via cec-ctl, called from shairport-sync's sessioncontrol hooks
+    airplay-tv-power.sh          TV power on/standby + AirPlay connect volume, called from shairport-sync's sessioncontrol hooks
     airplay-cec-remote.py          TV remote passthrough → shairport-sync D-Bus RemoteControl
     airplay-cec-remote.service
     airplaymatrix-quit.sh           closes the desk-display kiosk app (bound to Shift+X)
@@ -179,3 +196,17 @@ docs/
   covered in docs/install-pi-zero-wh.md, including the one thing that was
   deliberately *not* chased further (a NetworkManager/netplan reload cost)
   and why.
+- AirPlay 2 (`setup.sh`'s default, `install-full-pi.md`/`install-pi-zero-wh.md`
+  step 2b) has been built, deployed, and confirmed working -- including the
+  Instagram-doesn't-interrupt-AirPlay behavior it exists for -- on real Pi
+  Zero WH hardware. The same build steps should work unchanged on a Pi 5
+  (same shairport-sync/nqptp source, no Pi-Zero-specific flags), but that
+  hasn't been independently re-confirmed on one; if a from-source build
+  goes wrong there, `--classic-airplay` is the escape hatch.
+- The lyrics-offset and AirPlay-connect-volume web UI settings
+  (`display_settings.py`) only exist because of the AirPlay 2 switch above
+  -- AirPlay 2's larger output buffer vs. shairport-sync's `prgr` metadata
+  reporting stream position, not audible position, and neither Pi having a
+  physical volume control. Both default to values tuned for the Zero WH
+  reference unit (0s offset, 75% connect volume); dial in per-device from
+  the web UI if a different receiver/amp needs different values.

@@ -136,6 +136,40 @@ aplay -l   # confirm the HDMI audio device name matches "default"/vc4hdmi0
 sudo systemctl enable --now shairport-sync
 ```
 
+## 2b. AirPlay 2 (optional but recommended)
+
+Also same as the full build (install-full-pi.md's step 2b) -- `setup.sh`
+does this by default, pass `--classic-airplay` to skip it. The one
+Zero-WH-specific thing worth knowing before running it by hand: this
+single ARM1176 core with 512MB RAM is genuinely tight for a native build,
+so add a temporary swapfile and free up RAM first (`setup.sh` does both of
+these automatically):
+
+```bash
+sudo fallocate -l 1G /swapfile-build && sudo chmod 600 /swapfile-build
+sudo mkswap /swapfile-build && sudo swapon -p 10 /swapfile-build
+# then follow install-full-pi.md's step 2b, and finally:
+sudo swapoff /swapfile-build && sudo rm -f /swapfile-build
+```
+
+If the kiosk app is already running (a re-run, not a fresh install), stop
+it first (`pkill -f app_qt5.main`) so the build isn't competing with it for
+RAM, then relaunch it afterward. labwc's own autostart (step 5 below) isn't
+respawned, so relaunching by hand over SSH needs these set explicitly --
+none of them are inherited from an SSH session the way they would be from
+a shell already running inside the desktop session:
+
+```bash
+DISPLAY=:0 XAUTHORITY=~/.Xauthority WAYLAND_DISPLAY=wayland-0 \
+  XDG_RUNTIME_DIR=/run/user/1000 ~/.local/bin/airplaymatrix-run.sh &
+```
+
+Without these, Qt5's XCB platform plugin fails to start at all (`could not
+connect to display`) rather than falling back to something visible.
+
+Building itself took about 20 minutes on real Zero WH hardware -- CPU-bound
+on the single core, not memory-bound once the swapfile above is in place.
+
 ## 3. HDMI-CEC
 
 Identical to the full build -- the Zero only has one HDMI port, so
@@ -259,10 +293,16 @@ sudo journalctl -u airplaymatrix-matrix -f
 
 ## Verifying
 
-- `systemctl status shairport-sync airplay-cec-remote airplaymatrix-webui`
+- `systemctl status shairport-sync nqptp airplay-cec-remote airplaymatrix-webui`
   (+ `airplaymatrix-matrix` if you went headless, or check the kiosk app is
   on-screen if not)
-- AirPlay to the device should wake the TV over CEC and start audio.
+- `shairport-sync -V` should show `AirPlay2` (step 2b) -- opening another
+  app on the phone (e.g. Instagram) while AirPlaying shouldn't interrupt
+  the stream.
+- AirPlay to the device should wake the TV over CEC, start audio, and
+  connect at the web UI's "AirPlay connect volume" setting (75% by
+  default) regardless of what a source app last remembered -- the phone's
+  own volume slider should keep working normally after that.
 - Album art should appear on the LED matrix within a second or two of a
   track starting.
 - Leave it idle for 5 minutes after stopping playback -- the TV should go
@@ -270,7 +310,9 @@ sudo journalctl -u airplaymatrix-matrix -f
 - If you went with Plan A, the web UI dashboard's "Desk display" card
   should show song details on / lyrics off (the defaults), and toggling
   either should change what's on screen within a couple of seconds with no
-  restart.
+  restart. If lyrics land early or late (step 2b's AirPlay 2 buffering vs.
+  shairport-sync's progress metadata), dial in the "Lyrics offset" field
+  there too.
 
 ## Boot time and idle-screen polish (Plan A only)
 

@@ -60,6 +60,8 @@ DISPLAY_MODE=auto   # auto | kiosk | headless
 QT_MAJOR=auto        # auto | 5 | 6  (only consulted when DISPLAY_MODE=kiosk)
 DO_LAUNCH=1
 DO_POLISH=1          # only consulted when DISPLAY_MODE=kiosk && QT_MAJOR=5
+AIRPLAY_MODE=2       # 2 | classic -- see "AirPlay 2" section below
+REBUILD_AIRPLAY2=0
 
 usage() {
   cat <<'EOF'
@@ -83,6 +85,17 @@ Usage: ./setup.sh [options]
                     cursor). Pass this if you want any of those left alone,
                     e.g. you're actively using RPi Connect screen sharing on
                     this device.
+  --classic-airplay  Skip building AirPlay 2 support (nqptp + shairport-sync
+                    from source, on by default -- see "AirPlay 2" below);
+                    apt's classic-AirPlay-1-only shairport-sync is what's
+                    live instead. Faster install, no source build. Pass this
+                    if you don't care about another app's audio being able
+                    to interrupt AirPlay, or want the simpler/better-tested
+                    path.
+  --rebuild-airplay2  Force a fresh AirPlay 2 build even if
+                    /usr/local/bin/shairport-sync already reports AirPlay2
+                    support (default: skip the ~20min rebuild when it does).
+                    Use this to pick up upstream shairport-sync/nqptp fixes.
   --no-launch      Do everything except launch the app / reboot hint at the
                     end -- useful if you're scripting this further.
   -h, --help       This.
@@ -96,6 +109,8 @@ while [[ $# -gt 0 ]]; do
     --qt5) QT_MAJOR=5 ;;
     --qt6) QT_MAJOR=6 ;;
     --no-polish) DO_POLISH=0 ;;
+    --classic-airplay) AIRPLAY_MODE=classic ;;
+    --rebuild-airplay2) REBUILD_AIRPLAY2=1 ;;
     --no-launch) DO_LAUNCH=0 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (see --help)" ;;
@@ -173,6 +188,11 @@ if [[ "$DISPLAY_MODE" == kiosk ]]; then
 else
   log "Plan: headless matrix daemon (no display)"
 fi
+if [[ "$AIRPLAY_MODE" == classic ]]; then
+  log "Plan: classic AirPlay 1 only (--classic-airplay)"
+else
+  log "Plan: AirPlay 2 (nqptp + shairport-sync built from source -- pass --classic-airplay to skip)"
+fi
 
 # Recorded before anything below touches it: the web UI's admin password is
 # only ever shown in plaintext once, at the moment its config is first
@@ -237,6 +257,131 @@ else
   rm -f "$TARGET_HOME/.local/bin/airplaymatrix-run.sh"
 fi
 
+# AirPlay 2 (nqptp + shairport-sync, built from source)
+#
+# Neither Debian nor Raspberry Pi OS ship an AirPlay-2-capable shairport-sync
+# or the nqptp companion clock-sync daemon it needs -- confirmed via
+# `apt-cache show shairport-sync` pulling in none of AirPlay 2's crypto libs
+# (libsodium, libplist) or nqptp itself, and the apt package's own `-V`
+# output never showing "AirPlay2". Without it, iOS treats this receiver's
+# stream the same as any other app's incidental audio: opening another app
+# (e.g. Instagram) while AirPlaying can interrupt/replace it. Real AirPlay 2
+# destinations (a HomePod, an AirPlay-2-certified TV) don't have that
+# problem -- iOS treats them as an app-owned route instead, and other apps'
+# sound just plays through the phone's own speaker.
+#
+# Installs to /usr/local/bin, NOT /usr/bin -- deliberately never touches or
+# replaces the apt package installed above, so it stays the instant,
+# always-available fallback: `sudo systemctl revert shairport-sync && sudo
+# systemctl restart shairport-sync` completely undoes the override below.
+AIRPLAY2_BUILD_DEPS=(
+  build-essential git autoconf automake libtool
+  libpopt-dev libconfig-dev libasound2-dev libavahi-client-dev
+  libssl-dev libsoxr-dev libplist-dev libsodium-dev uuid-dev libgcrypt-dev
+  xxd libplist-utils libavutil-dev libavcodec-dev libavformat-dev
+  libmosquitto-dev libdbus-1-dev libglib2.0-dev
+  systemd-dev  # Debian 13/trixie split pkg-config's systemd.pc out of systemd itself
+)
+
+install_airplay2() {
+  if [[ "$REBUILD_AIRPLAY2" -eq 0 ]] && [[ -x /usr/local/bin/shairport-sync ]] \
+     && /usr/local/bin/shairport-sync --version 2>&1 | grep -q AirPlay2; then
+    log "AirPlay 2 build already present (/usr/local/bin/shairport-sync) -- skipping the ~20min rebuild."
+    log "Pass --rebuild-airplay2 to force a fresh one (e.g. to pick up upstream fixes)."
+    return
+  fi
+
+  step "1b: AirPlay 2 (nqptp + shairport-sync, built from source -- slow, be patient)"
+
+  # Building on a memory-tight, single-core device (Pi Zero WH class) risks
+  # the compiler getting OOM-killed mid-build, or the kiosk app it's
+  # competing with for RAM getting killed instead -- neither is a real risk
+  # on a Pi 4/5, so only pay this cost where it's actually needed.
+  local total_mem_kb added_build_swap=0
+  total_mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+  if [[ "$total_mem_kb" -lt 1048576 ]]; then  # < 1GB
+    log "Low-RAM device detected ($((total_mem_kb / 1024))MB) -- adding a temporary 1G build swapfile"
+    if [[ ! -f /swapfile-build ]]; then
+      sudo fallocate -l 1G /swapfile-build
+      sudo chmod 600 /swapfile-build
+      sudo mkswap /swapfile-build >/dev/null
+      sudo swapon -p 10 /swapfile-build
+    fi
+    added_build_swap=1
+  fi
+
+  local kiosk_was_running=0
+  if pgrep -f 'app_qt5\.main' >/dev/null 2>&1 || pgrep -f '(^|/)app\.main' >/dev/null 2>&1; then
+    log "Stopping the kiosk app for the duration of the build (frees RAM; restarted after)"
+    pkill -f 'app_qt5\.main' 2>/dev/null || true
+    pkill -f '(^|/)app\.main' 2>/dev/null || true
+    kiosk_was_running=1
+  fi
+
+  sudo apt-get install -y --no-install-recommends "${AIRPLAY2_BUILD_DEPS[@]}"
+
+  local build_root
+  build_root="$(mktemp -d)"
+
+  log "Building nqptp..."
+  git clone --quiet https://github.com/mikebrady/nqptp.git "$build_root/nqptp"
+  ( cd "$build_root/nqptp" && autoreconf -fi && ./configure --with-systemd-startup && make )
+  sudo make -C "$build_root/nqptp" install
+  sudo systemctl enable --now nqptp
+
+  log "Building shairport-sync (this is the slow part)..."
+  git clone --quiet https://github.com/mikebrady/shairport-sync.git "$build_root/shairport-sync"
+  (
+    cd "$build_root/shairport-sync"
+    autoreconf -fi
+    # Same feature set as the apt package (dbus/mpris for the CEC remote
+    # control, metadata for the desk-display apps, mqtt/soxr/convolution
+    # for parity) plus --with-airplay-2. Flag names here are current as of
+    # shairport-sync 5.2.3 -- the 4.x names (--with-dbus, --with-mpris,
+    # --with-mqtt, --with-pa) were silently accepted-then-ignored rather
+    # than erroring, which is how this was first discovered wrong.
+    ./configure --sysconfdir=/etc \
+      --with-alsa --with-soxr --with-avahi --with-ssl=openssl \
+      --with-systemd-startup --with-airplay-2 \
+      --with-metadata --with-dbus-interface --with-mpris-interface --with-mqtt-client \
+      --with-stdout --with-pipe --with-dummy --with-convolution
+    make
+  )
+  sudo make -C "$build_root/shairport-sync" install
+
+  rm -rf "$build_root"
+
+  if [[ "$added_build_swap" -eq 1 ]]; then
+    sudo swapoff /swapfile-build || true
+    sudo rm -f /swapfile-build
+  fi
+
+  log "Wiring in via a systemd override -- apt's /usr/bin/shairport-sync stays untouched as an"
+  log "instant fallback: sudo systemctl revert shairport-sync && sudo systemctl restart shairport-sync"
+  sudo mkdir -p /etc/systemd/system/shairport-sync.service.d
+  sudo tee /etc/systemd/system/shairport-sync.service.d/override.conf >/dev/null <<'AIRPLAY2_OVERRIDE_EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/shairport-sync $DAEMON_ARGS
+AIRPLAY2_OVERRIDE_EOF
+  sudo systemctl daemon-reload
+  sudo systemctl restart shairport-sync
+
+  if [[ "$kiosk_was_running" -eq 1 && "$DISPLAY_MODE" == kiosk && -S "/run/user/${TARGET_UID}/wayland-0" ]]; then
+    log "Restarting the kiosk app"
+    env DISPLAY=:0 XAUTHORITY="$TARGET_HOME/.Xauthority" \
+      XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" WAYLAND_DISPLAY=wayland-0 \
+      "$TARGET_HOME/.local/bin/airplaymatrix-run.sh" \
+      >/tmp/airplaymatrix-run.log 2>&1 &
+    disown
+  elif [[ "$kiosk_was_running" -eq 1 ]]; then
+    warn "Couldn't confirm an active desktop session to restart the kiosk app into --"
+    warn "log back into the desktop session or reboot to bring it back."
+  fi
+
+  log "shairport-sync is now: $(/usr/local/bin/shairport-sync --version 2>&1)"
+}
+
 # ---------------------------------------------------------------------------
 # 1. AirPlay receiver
 # ---------------------------------------------------------------------------
@@ -258,6 +403,12 @@ log "Reminder: confirm the ALSA output device with 'aplay -l' -- the example"
 log "conf ships with output_device = \"default\" (HDMI audio); edit"
 log "/etc/shairport-sync.conf and restart shairport-sync if you're using a"
 log "USB DAC or I2S HAT instead."
+
+if [[ "$AIRPLAY_MODE" == classic ]]; then
+  log "Skipping AirPlay 2 (--classic-airplay): apt's shairport-sync (classic AirPlay 1 only) stays live."
+else
+  install_airplay2
+fi
 
 # ---------------------------------------------------------------------------
 # 2. HDMI-CEC

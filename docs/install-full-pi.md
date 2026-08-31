@@ -55,6 +55,77 @@ The example config already wires up the CEC session hooks from step 3 below
 (`sessioncontrol.run_this_before/after_entering_active_state`) and the
 metadata pipe the desk-display app and matrix daemon both read from.
 
+## 2b. AirPlay 2 (optional but recommended)
+
+`setup.sh` does this by default (pass `--classic-airplay` to skip it). Doing
+it by hand:
+
+Classic AirPlay 1 (what the apt package above is) means iOS treats this
+receiver the same as any other audio output for *any* app -- opening
+Instagram while AirPlaying music can interrupt/replace the stream. AirPlay
+2 destinations (a HomePod, an AirPlay-2-certified TV) don't have that
+problem: iOS treats them as an app-owned route, and other apps' incidental
+sound just plays through the phone's own speaker instead. Neither Debian
+nor Raspberry Pi OS ship an AirPlay-2-capable shairport-sync or the
+`nqptp` companion clock-sync daemon it needs, so both are built from
+source here -- installed to `/usr/local/bin`, not `/usr/bin`, so the apt
+package above stays untouched as an instant fallback
+(`sudo systemctl revert shairport-sync && sudo systemctl restart shairport-sync`
+completely undoes this).
+
+```bash
+sudo apt install -y --no-install-recommends \
+  build-essential git autoconf automake libtool \
+  libpopt-dev libconfig-dev libasound2-dev libavahi-client-dev \
+  libssl-dev libsoxr-dev libplist-dev libsodium-dev uuid-dev libgcrypt-dev \
+  xxd libplist-utils libavutil-dev libavcodec-dev libavformat-dev \
+  libmosquitto-dev libdbus-1-dev libglib2.0-dev \
+  systemd-dev   # Debian 13/trixie split pkg-config's systemd.pc out of systemd itself
+
+git clone https://github.com/mikebrady/nqptp.git /tmp/nqptp
+cd /tmp/nqptp && autoreconf -fi && ./configure --with-systemd-startup && make
+sudo make install
+sudo systemctl enable --now nqptp
+cd - && rm -rf /tmp/nqptp
+
+git clone https://github.com/mikebrady/shairport-sync.git /tmp/shairport-sync
+cd /tmp/shairport-sync && autoreconf -fi
+# Same feature set as the apt package (dbus/mpris for the CEC remote
+# control, metadata for the desk-display app, mqtt/soxr/convolution for
+# parity) plus --with-airplay-2. Flag names current as of shairport-sync
+# 5.2.3 -- the 4.x names (--with-dbus, --with-mpris, --with-mqtt, --with-pa)
+# are silently accepted then ignored rather than erroring, not a config-time
+# error you'd notice.
+./configure --sysconfdir=/etc \
+  --with-alsa --with-soxr --with-avahi --with-ssl=openssl \
+  --with-systemd-startup --with-airplay-2 \
+  --with-metadata --with-dbus-interface --with-mpris-interface --with-mqtt-client \
+  --with-stdout --with-pipe --with-dummy --with-convolution
+make
+sudo make install
+cd - && rm -rf /tmp/shairport-sync
+```
+
+Wire the new binary in via a systemd override rather than editing the apt
+package's unit file:
+
+```bash
+sudo mkdir -p /etc/systemd/system/shairport-sync.service.d
+sudo tee /etc/systemd/system/shairport-sync.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/shairport-sync $DAEMON_ARGS
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart shairport-sync
+shairport-sync -V   # confirm "AirPlay2" appears in the version string
+```
+
+Building this natively is slow but not memory-heavy on a Pi 4/5 -- it's a
+real concern on a Pi Zero WH's single ARM1176 core with 512MB RAM, where
+`setup.sh` adds a temporary swapfile and stops the kiosk app for the
+duration of the build; see install-pi-zero-wh.md.
+
 ## 3. HDMI-CEC (TV power + remote passthrough)
 
 ```bash
@@ -187,9 +258,17 @@ USB-UART bridge chip) and reconnect automatically if it's unplugged.
 
 ## Verifying
 
-- `systemctl status shairport-sync airplay-cec-remote airplaymatrix-webui`
+- `systemctl status shairport-sync nqptp airplay-cec-remote airplaymatrix-webui`
+- `shairport-sync -V` should show `AirPlay2` (step 2b) -- if it doesn't,
+  `systemctl show shairport-sync -p ExecStart` to confirm the override in
+  step 2b actually took (should point at `/usr/local/bin/shairport-sync`,
+  not `/usr/bin/shairport-sync`).
 - AirPlay from a phone/laptop to the device's name (default "AirplayMatrix")
   should wake the TV, start playback, and show artwork on the kiosk screen
-  and the LED matrix.
+  and the LED matrix. With AirPlay 2 (step 2b), opening another app on the
+  phone (e.g. Instagram) shouldn't interrupt the stream.
 - Stopping playback for 5 minutes (`active_state_timeout` in the conf)
   should put the TV in standby.
+- AirPlay should connect at the web UI's "AirPlay connect volume" setting
+  (75% by default) regardless of what a source app last remembered, and
+  the phone's own volume slider should keep working normally after that.
