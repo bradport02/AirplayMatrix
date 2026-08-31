@@ -67,6 +67,15 @@ Item {
 
         Text {
             Layout.alignment: Qt.AlignHCenter
+            text: "Discoverable: " + app.deviceName
+            color: Theme.colorTextSecondary
+            font.family: Theme.fontFamily
+            font.pixelSize: 13 * Theme.uiScale
+            opacity: 0.75
+        }
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
             text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Waiting for connection"
             color: Theme.colorTextSecondary
             font.family: Theme.fontFamily

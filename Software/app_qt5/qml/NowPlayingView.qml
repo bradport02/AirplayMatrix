@@ -20,14 +20,27 @@ Item {
     // not an actual fault. "Waiting for connection" reflects that; a
     // genuinely offline receiver isn't something this app can tell apart
     // from a receiver that's simply idle, so it doesn't try to.
-    Text {
+    ColumnLayout {
         anchors.centerIn: parent
         visible: !app.track.sessionActive
-        text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Waiting for connection"
-        color: Theme.colorTextPrimary
-        font.family: Theme.fontFamily
-        font.pixelSize: 20 * Theme.uiScale
-        font.weight: Font.Medium
+        spacing: Theme.spacingXs
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
+            text: "Discoverable: " + app.deviceName
+            color: Theme.colorTextSecondary
+            font.family: Theme.fontFamily
+            font.pixelSize: 14 * Theme.uiScale
+        }
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
+            text: app.track.bridgeConnected ? "Waiting for AirPlay" : "Waiting for connection"
+            color: Theme.colorTextPrimary
+            font.family: Theme.fontFamily
+            font.pixelSize: 20 * Theme.uiScale
+            font.weight: Font.Medium
+        }
     }
 
     // Now-playing state: artwork on the left, details/lyrics on the right.

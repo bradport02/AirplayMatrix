@@ -15,6 +15,7 @@ from typing import Callable
 
 from PySide6.QtCore import Property, QObject, QTimer, Slot, Signal
 
+import airplay_name
 from metadata import MetadataSource, PipeSource, TcpSource
 from receiver import NullSupervisor, ReceiverSupervisor, WslProcessSupervisor
 
@@ -46,6 +47,7 @@ def _default_supervisor() -> ReceiverSupervisor:
 
 class AppController(QObject):
     receiverRunningChanged = Signal()
+    deviceNameChanged = Signal()
 
     def __init__(
         self,
@@ -56,6 +58,8 @@ class AppController(QObject):
         super().__init__(parent)
         self._supervisor = supervisor if supervisor is not None else _default_supervisor()
         self._receiver_running = False
+        self._device_name_mtime = airplay_name.mtime()
+        self._device_name = airplay_name.read()
 
         self._track = TrackController(source_factory or _default_source_factory(), self)
         self._lyrics = LyricsController(self._track, self)
@@ -75,8 +79,22 @@ class AppController(QObject):
             self._receiver_running = running
             self.receiverRunningChanged.emit()
 
+        # Piggybacks on this same 1s tick rather than a timer of its own --
+        # a rename is rare and this is just a stat() until it happens (see
+        # airplay_name.mtime()), so it's not worth a second QTimer.
+        name_mtime = airplay_name.mtime()
+        if name_mtime != self._device_name_mtime:
+            self._device_name_mtime = name_mtime
+            name = airplay_name.read()
+            if name != self._device_name:
+                self._device_name = name
+                self.deviceNameChanged.emit()
+
     def _get_receiver_running(self) -> bool:
         return self._receiver_running
+
+    def _get_device_name(self) -> str:
+        return self._device_name
 
     def _get_track(self) -> TrackController:
         return self._track
@@ -88,6 +106,7 @@ class AppController(QObject):
         return self._matrix
 
     receiverRunning = Property(bool, _get_receiver_running, notify=receiverRunningChanged)
+    deviceName = Property(str, _get_device_name, notify=deviceNameChanged)
     track = Property(QObject, _get_track, constant=True)
     lyrics = Property(QObject, _get_lyrics, constant=True)
     matrix = Property(QObject, _get_matrix, constant=True)
