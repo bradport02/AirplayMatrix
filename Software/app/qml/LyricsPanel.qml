@@ -118,6 +118,18 @@ Item {
         var recycled = items.find(function (h) { return h.role === 0 })
         var next = items.find(function (h) { return h.role === 3 })
 
+        // In steady state `next` already holds root.currentLine's new value
+        // -- it was written here as recycled.text on the *previous* rotate()
+        // call, back when it was still the recycled holder taking over the
+        // "next" role. This line is a no-op then. It only matters right
+        // after a track/lyrics reset: the holder now in the "next" role got
+        // its text from Component.onCompleted (or clearHolders()), at a
+        // point before this track's lyrics were even loaded, so it's still
+        // sitting on "" -- without this, a track's first line never
+        // actually gets drawn in any role and playback reads as starting
+        // from the second line instead.
+        next.text = root.currentLine
+
         // Snap the recycled holder below the viewport with the freshly
         // revealed next line before it joins the animated shift below --
         // without this it would visibly slide down from "exited" through
