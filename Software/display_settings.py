@@ -21,7 +21,9 @@ compensates: how many seconds *later* (positive) or *earlier* (negative)
 the lyric line should switch relative to prgr's raw position. There's no
 way to derive the right value from the protocol -- it's the receiver's
 actual buffer depth, which isn't exposed -- so it's a knob to dial in by
-ear/eye from the web UI, not something computed.
+ear/eye from the web UI, not something computed. Every change to it is
+appended to OFFSET_HISTORY_PATH below, to tell a one-off dial-in apart from
+actual drift.
 
 `connect_volume_percent` is a second exception, and isn't read by either
 kiosk app at all -- it's cec/airplay-tv-power.sh, run by shairport-sync as
@@ -47,12 +49,22 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
 
 LOG = logging.getLogger(__name__)
 
 CONFIG_PATH = Path.home() / ".config" / "airplaymatrix-display" / "config.json"
+
+# Every actual change to lyrics_offset_seconds gets a line here, so whether
+# it's stable or drifting over time can be checked later without having to
+# reconstruct it from memory. A plain flat-file append rather than relying on
+# journald: one of these Pis has already lost its persistent journal once to
+# an unclean-shutdown ext4 corruption, and neither the web UI's route nor the
+# kiosk app's poll loop otherwise records *when* or *by how much* this value
+# has changed.
+OFFSET_HISTORY_PATH = CONFIG_PATH.parent / "lyrics_offset_history.log"
 
 DEFAULTS = {
     "show_lyrics": False,  # off by default -- Zero WH performance is unproven
@@ -125,9 +137,24 @@ def set_lyrics_offset(seconds: float) -> DisplaySettings:
     """Separate from set_one() -- this one's a clamped float, not a toggle."""
     seconds = max(-LYRICS_OFFSET_LIMIT_SECONDS, min(LYRICS_OFFSET_LIMIT_SECONDS, seconds))
     settings = load()
+    previous = settings["lyrics_offset_seconds"]
     settings["lyrics_offset_seconds"] = seconds
     save(settings)
+    if seconds != previous:
+        _log_offset_change(previous, seconds)
     return settings
+
+
+def _log_offset_change(previous: float, new: float) -> None:
+    """Best-effort: a failure to write the history line shouldn't undo the
+    setting change above, which has already been saved by the time this
+    runs."""
+    line = f"{datetime.now().astimezone().isoformat(timespec='seconds')}  {previous:+.2f} -> {new:+.2f}\n"
+    try:
+        with OFFSET_HISTORY_PATH.open("a") as f:
+            f.write(line)
+    except OSError as exc:
+        LOG.warning("could not append to %s (%s)", OFFSET_HISTORY_PATH, exc)
 
 
 def set_connect_volume_percent(percent: int) -> DisplaySettings:
