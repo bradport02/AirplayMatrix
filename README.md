@@ -232,6 +232,12 @@ docs/
   of the first song for lyrics that are in step for the rest of it. The
   restart is a best-effort MPRIS `Seek` back to the start, which depends on
   the sender honouring it.
+- The Zero WH kiosk runs on **native Wayland**, not XCB. It used to go
+  through Xwayland, which cost a whole extra X server -- 54MB resident on a
+  426MB machine, more than the app itself -- and a second full-screen
+  composite of every frame, for nothing the app uses X for. The launcher
+  falls back to Qt's default if the compositor's socket isn't there yet, so
+  an early boot can't end up with a black screen.
 - The lyrics-offset and AirPlay-connect-volume web UI settings
   (`display_settings.py`) only exist because of the AirPlay 2 switch above
   -- AirPlay 2's larger output buffer vs. shairport-sync's `prgr` metadata

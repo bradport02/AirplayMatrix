@@ -14,6 +14,7 @@ import base64
 import logging
 import subprocess
 import threading
+from dataclasses import dataclass
 from typing import Callable
 
 from PySide2.QtCore import Property, QObject, QTimer, Signal, Slot
@@ -75,6 +76,36 @@ def _sniff_mime(data: bytes) -> str:
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         return "image/png"
     return "image/jpeg"  # AirPlay artwork is overwhelmingly JPEG; safe default
+
+
+@dataclass
+class _Transition:
+    """One track change in flight, and nothing else.
+
+    Two things must happen before the incoming track can replace the one on
+    screen, and they complete in *either* order:
+
+        settled    the incoming track's data is complete (artwork included)
+        faded_out  the panel has confirmed it is off screen
+
+    "fade" mode starts fading the moment a change is noticed, so faded_out
+    normally arrives first; "crossfade" holds the outgoing track until the
+    data is complete, so settled does. Neither order is special -- the swap
+    happens when both are true, whenever that is.
+
+    The point of putting them on an object that exists *only* during a
+    change is that there is no such thing as a stale value: no transition,
+    no flags. Held as separate long-lived booleans, they repeatedly kept
+    values from the previous change and let a fade be reported before one
+    had begun, or a swap happen onto a panel that was still visible.
+    """
+
+    settled: bool = False
+    faded_out: bool = False
+
+    @property
+    def ready(self) -> bool:
+        return self.settled and self.faded_out
 
 
 class TrackController(QObject):
@@ -168,10 +199,11 @@ class TrackController(QObject):
         # The two conditions _publish() waits on, tracked separately because
         # they complete independently: the new track's data being complete,
         # and the outgoing panel having finished fading out.
-        self._settled = False
-        self._faded_out = True
+        # The change in flight, or None when the display is settled. See
+        # _Transition -- every "is a track change happening?" question in
+        # this class is this one identity check.
+        self._transition: Optional[_Transition] = None
 
-        self._track_changing = False
         # artwork_revision of whatever is currently *on display*. The
         # transition waits for the tracker to hold something different from
         # this -- deliberately not "an artwork item arrived after the title
@@ -377,24 +409,23 @@ class TrackController(QObject):
         # (artist, album) arrive right behind it and must not reopen or
         # extend anything -- what the panel is waiting on from here is the
         # artwork, and that's what _on_artwork_touched resolves.
-        if self._track_changing:
+        if self._transition is not None:
             return
         LOG.debug("transition: opened (content_ready=%s)", self._content_ready)
-        self._settled = False
-        self._track_changing = True
-        self.readyToTransitionChanged.emit()
-        # Assume a fade-out is owed, and let either QML's report or the
-        # grace timer satisfy it -- see FADE_OUT_GRACE_MS for why this can't
-        # be inferred from _content_ready.
-        self._faded_out = False
-        self.trackChangingChanged.emit()
+        # A fade-out is always assumed owed; either QML's report or the
+        # grace timer satisfies it. See FADE_OUT_GRACE_MS for why that
+        # can't be inferred from _content_ready.
+        self._transition = _Transition()
         self._settle_timer.stop()
+        self._fade_grace_timer.stop()
         if self._artwork_is_new():
             # The new cover is already here -- it arrived with, or ahead of,
             # the title. Nothing left to wait for beyond the short settle.
             self._settle_timer.start()
         else:
             self._max_wait_timer.start()
+        self.trackChangingChanged.emit()
+        self.readyToTransitionChanged.emit()
 
     def _artwork_is_new(self) -> bool:
         """Whether the tracker holds real, not-yet-displayed artwork.
@@ -415,7 +446,7 @@ class TrackController(QObject):
     def _on_artwork_touched(self) -> None:
         if not self._artwork_is_new():
             return
-        if not self._track_changing:
+        if self._transition is None:
             # Artwork for a track that has already been published -- the
             # sender was slower than TRACK_CHANGE_MAX_MS, or it updated the
             # cover mid-track. Publishing it straight away means it appears
@@ -438,10 +469,12 @@ class TrackController(QObject):
 
     def _on_track_settled(self) -> None:
         """The incoming track's data is as complete as it's going to get."""
+        if self._transition is None:
+            return  # a timer outliving its transition
         self._settle_timer.stop()
         self._max_wait_timer.stop()
-        LOG.debug("transition: data settled (faded_out=%s)", self._faded_out)
-        self._settled = True
+        LOG.debug("transition: data settled (faded_out=%s)", self._transition.faded_out)
+        self._transition.settled = True
         # Only now can the visible fade begin in crossfade mode (the panel
         # holds the outgoing track until the data is complete), so this is
         # where the backstop starts counting. Starting it back when the
@@ -451,9 +484,9 @@ class TrackController(QObject):
         # panel, and only then let it fade. Skipped when QML has already
         # reported (fade mode fades immediately, so it usually has).
         self.readyToTransitionChanged.emit()
-        if not self._faded_out:
+        if not self._transition.faded_out:
             self._fade_grace_timer.start()
-        self._try_publish()
+        self._advance()
 
     def _on_session_started(self) -> None:
         """Put the current track back on screen when a session resumes.
@@ -478,26 +511,14 @@ class TrackController(QObject):
         if not has_track:
             return  # genuinely nothing to show yet; wait for metadata
         LOG.debug("session resumed with a track already known -- republishing")
-        self._settle_timer.stop()
-        self._max_wait_timer.stop()
-        self._fade_grace_timer.stop()
-        self._settled = True
-        self._faded_out = True
+        self._end_transition()
         self._publish()
 
     def _on_session_ended(self) -> None:
         """Back to a clean slate, so the next connection starts from the
         waiting screen and fades in fresh rather than flashing up the last
         session's track."""
-        self._settle_timer.stop()
-        self._max_wait_timer.stop()
-        self._fade_grace_timer.stop()
-        self._settled = False
-        self._faded_out = True
-        if self._track_changing:
-            self._track_changing = False
-            self.trackChangingChanged.emit()
-            self.readyToTransitionChanged.emit()
+        self._end_transition()
         if self._content_ready:
             self._content_ready = False
             self.contentReadyChanged.emit()
@@ -507,21 +528,41 @@ class TrackController(QObject):
         """Called from NowPlayingView.qml the moment the panel reaches zero
         opacity. Swapping the displayed track any earlier than this is
         exactly the bug this whole mechanism exists to avoid."""
-        LOG.debug("transition: fade-out reported by QML (settled=%s)", self._settled)
+        if self._transition is None:
+            return  # nothing in flight; QML guards this too, belt and braces
+        LOG.debug("transition: fade-out reported by QML (settled=%s)", self._transition.settled)
         self._fade_grace_timer.stop()
-        self._faded_out = True
-        self._try_publish()
+        self._transition.faded_out = True
+        self._advance()
 
     def _on_fade_grace_expired(self) -> None:
         """QML didn't report a fade-out in time -- most likely because the
         panel was already invisible and its opacity never changed."""
-        LOG.debug("transition: fade-out grace expired (settled=%s)", self._settled)
-        self._faded_out = True
-        self._try_publish()
+        if self._transition is None:
+            return
+        LOG.debug("transition: fade-out grace expired (settled=%s)", self._transition.settled)
+        self._transition.faded_out = True
+        self._advance()
 
-    def _try_publish(self) -> None:
-        if self._settled and self._faded_out:
+    def _advance(self) -> None:
+        """Publish as soon as both halves of the transition are done."""
+        if self._transition is not None and self._transition.ready:
             self._publish()
+
+    def _end_transition(self) -> None:
+        """Drop any change in flight and silence its timers.
+
+        Safe to call when nothing is in flight, which is why every path that
+        finishes or abandons a transition can just call it.
+        """
+        self._settle_timer.stop()
+        self._max_wait_timer.stop()
+        self._fade_grace_timer.stop()
+        if self._transition is None:
+            return
+        self._transition = None
+        self.trackChangingChanged.emit()
+        self.readyToTransitionChanged.emit()
 
     def _publish(self) -> None:
         """Move the incoming track into _displayed and let the panel back in.
@@ -529,7 +570,6 @@ class TrackController(QObject):
         Everything changes in one go while nothing is visible, so the panel
         never shows a mix of two tracks.
         """
-        self._fade_grace_timer.stop()
         with self._lock:
             state = self._tracker.state
             new = {
@@ -565,10 +605,7 @@ class TrackController(QObject):
             self.contentReadyChanged.emit()
 
         # Last, so QML applies the new content before it starts fading it in.
-        if self._track_changing:
-            self._track_changing = False
-            self.trackChangingChanged.emit()
-            self.readyToTransitionChanged.emit()
+        self._end_transition()
 
     def _get_client_name(self) -> str:
         with self._lock:
@@ -601,10 +638,10 @@ class TrackController(QObject):
     clientConnected = Property(bool, _get_client_connected, notify=clientConnectedChanged)
 
     def _get_track_changing(self) -> bool:
-        return self._track_changing
+        return self._transition is not None
 
     def _get_ready_to_transition(self) -> bool:
-        return self._track_changing and self._settled
+        return self._transition is not None and self._transition.settled
 
     # True from the moment a new track's metadata starts arriving until
     # TRACK_SETTLE_MS after the last of it lands. NowPlayingView.qml fades

@@ -241,10 +241,21 @@ needs one added explicitly, because it deliberately runs as the
 `shairport-sync` service user instead.)
 
 Autostart, same shape as the full build's step 5 but pointing at the Qt5
-package (`app_qt5`, not `app`) and no `QT_QPA_PLATFORM` override -- Qt5's
-Wayland QPA plugin isn't in the apt set installed above, and the default
-(XCB, under the desktop session's own X11/Xwayland) is what's actually
-tested here:
+package (`app_qt5`, not `app`).
+
+This asks for the **Wayland** QPA plugin rather than falling through to
+XCB. The plugin is present on this image (`libqwayland-egl.so` /
+`libqwayland-generic.so` ship with the Qt5 packages installed above, even
+though the docs here previously assumed otherwise), and going through
+Xwayland instead costs an entire extra X server -- measured at **54MB
+resident on a 426MB machine**, more than the kiosk app itself -- plus a
+second full-screen composite of every frame. Switching produced one
+harmless `Wayland does not support QWindow::requestActivate()` warning and
+nothing else.
+
+The socket test matters: if this runs before the compositor is up, asking
+for Wayland would fail outright and leave a black screen, so it falls back
+to Qt's own default in that case rather than insisting.
 
 ```bash
 mkdir -p ~/.local/bin
@@ -252,6 +263,9 @@ install -m 0755 <(cat <<'EOF'
 #!/bin/bash
 set -e
 cd ~/Documents/AirplayMatrix-main/Software
+if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-0}" ]; then
+  export QT_QPA_PLATFORM=wayland
+fi
 exec python3 -m app_qt5.main
 EOF
 ) ~/.local/bin/airplaymatrix-run.sh

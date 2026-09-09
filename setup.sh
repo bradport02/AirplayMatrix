@@ -513,7 +513,19 @@ else
     python3-serial python3-pil
   KIOSK_PYTHON="python3"
   KIOSK_MODULE="app_qt5.main"
-  KIOSK_QT_ENV='# no QT_QPA_PLATFORM override -- Qt5 build runs under the default XCB backend'
+  # Native Wayland, not XCB. Running this app under Xwayland cost an entire
+  # extra X server -- 54MB resident on a 426MB Zero WH, more than the kiosk
+  # app itself -- plus a second full-screen composite of every frame, for
+  # nothing this app actually uses X for. Measured directly: switching cost
+  # one harmless "Wayland does not support QWindow::requestActivate()"
+  # warning and removed Xwayland entirely.
+  #
+  # Guarded on the compositor's socket actually being there, so a boot that
+  # reaches this before labwc is up falls back to Qt's own default rather
+  # than failing to start at all and leaving a black screen.
+  KIOSK_QT_ENV='if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-0}" ]; then
+  export QT_QPA_PLATFORM=wayland
+fi'
 fi
 
 # ---------------------------------------------------------------------------
