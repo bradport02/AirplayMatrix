@@ -256,6 +256,24 @@ this repo) and connect it to the Pi over USB. Both the kiosk app and
 `MATRIX_VID`/`MATRIX_PID` -- update these if you're using a different
 USB-UART bridge chip) and reconnect automatically if it's unplugged.
 
+## 7. EQ meter (optional)
+
+The web UI's `/matrix` page can switch the LED panel from album artwork to
+a live bar-graph equaliser instead. This needs a one-time root setup step
+that isn't part of any of the above (it changes shairport-sync's own audio
+routing, which is worth doing deliberately, not as an install-script side
+effect) -- see `docs/install-pi-zero-wh.md`'s own EQ meter section for the
+full detail, since the mechanism (an ALSA loopback + `route`/`multi`
+device, read by `Software/matrix/eq_meter.py` via `arecord`, never touching
+the real playback path) is identical on every device:
+
+```bash
+scp Software/matrix/setup-eq-meter.sh <device>:~
+ssh -t <device> 'sudo bash ~/setup-eq-meter.sh'
+```
+
+Off by default -- toggle it on from `/matrix` once the script's run.
+
 ## Verifying
 
 - `systemctl status shairport-sync nqptp airplay-cec-remote airplaymatrix-webui`

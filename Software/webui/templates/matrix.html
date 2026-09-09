@@ -9,28 +9,48 @@
 </header>
 
 <section class="card">
-  <p class="muted warn">
-    Not wired to the panel yet. The ESP32 firmware currently only accepts album-art frames over
-    serial, with no command channel for power, brightness, colour, or a test pattern. Settings
-    saved here are held ready and will take effect once that firmware support ships.
-  </p>
-</section>
-
-<section class="card">
   <h2>{{ icon('grid') }} Display mode</h2>
-  <p class="muted">Currently showing <strong>{{ 'album art' if matrix.mode == 'album' else 'fixed colour' }}</strong>.</p>
+  <p class="muted">
+    What the 64x64 panel shows. Currently
+    <strong>{% if matrix_mode == 'eq_meter' %}EQ meter{% elif matrix_mode == 'fixed_color' %}fixed colour{% else %}album art{% endif %}</strong>.
+    These are mutually exclusive -- the EQ meter takes the whole panel over, so choosing album art
+    or fixed colour also switches it back off.
+  </p>
   <div class="button-row">
     <form method="post" action="{{ url_for('set_matrix_mode') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="mode" value="album">
-      <button type="submit" class="{{ 'primary' if matrix.mode == 'album' else '' }}">Album art</button>
+      <button type="submit" class="{{ 'primary' if matrix_mode == 'album' else '' }}">Album art</button>
     </form>
     <form method="post" action="{{ url_for('set_matrix_mode') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="mode" value="fixed_color">
-      <button type="submit" class="{{ 'primary' if matrix.mode == 'fixed_color' else '' }}">Fixed colour</button>
+      <button type="submit" class="{{ 'primary' if matrix_mode == 'fixed_color' else '' }}">Fixed colour</button>
+    </form>
+    <form method="post" action="{{ url_for('set_matrix_mode') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="mode" value="eq_meter">
+      <button type="submit" class="{{ 'primary' if matrix_mode == 'eq_meter' else '' }}">EQ meter</button>
     </form>
   </div>
+  <p class="muted">
+    <strong>EQ meter</strong> is a live bar-graph equaliser driven by the actual AirPlay audio (a
+    loopback tap on the Pi's own output). It needs a one-time <code>snd-aloop</code>/ALSA setup on
+    the device first -- see docs/install-pi-zero-wh.md's EQ meter section; until that's in place
+    this option does nothing. Of the three modes it is the only one actually wired up today --
+    it takes effect immediately, while album art and fixed colour are saved but inert (see
+    below).
+  </p>
+</section>
+
+<section class="card">
+  <p class="muted warn">
+    The album art / fixed colour choice above, and everything below, is <strong>not</strong>
+    wired to the panel yet. The ESP32 firmware currently only accepts image frames over serial,
+    with no command channel for power, brightness, colour, or a test pattern. Settings saved
+    here are held ready and will take effect once that firmware support ships. (The EQ meter
+    mode is the exception -- it runs on the Pi side, not the firmware's.)
+  </p>
 </section>
 
 <section class="card">
@@ -61,6 +81,7 @@
   </form>
 </section>
 
+{% if matrix_mode == 'fixed_color' %}
 <section class="card">
   <h2>{{ icon('bulb') }} Fixed colour</h2>
   <p class="muted">Used when display mode above is set to "Fixed colour".</p>
@@ -80,6 +101,7 @@
     <button type="submit" class="primary">Save</button>
   </form>
 </section>
+{% endif %}
 
 <section class="card">
   <h2>{{ icon('chip') }} Display test</h2>
@@ -91,6 +113,9 @@
 </section>
 
 <script>
+// Every element these touch lives inside the Fixed colour card, which is
+// only rendered when that mode is selected -- so bail out rather than
+// throwing on the other two modes.
 function onColorSelect() {
   const select = document.getElementById('color-select');
   const custom = document.getElementById('color-custom');
@@ -104,9 +129,13 @@ function onColorSelect() {
   }
 }
 
-document.getElementById('color-custom').addEventListener('input', function () {
-  document.getElementById('color-final').value = this.value;
-});
+(function () {
+  const custom = document.getElementById('color-custom');
+  if (!custom) return;
+  custom.addEventListener('input', function () {
+    document.getElementById('color-final').value = this.value;
+  });
+})();
 
 function prepareColorSubmit() {
   const select = document.getElementById('color-select');

@@ -33,6 +33,7 @@ POLL_MS = 2000
 
 class SettingsController(QObject):
     lyricsOffsetSecondsChanged = Signal()
+    eqMeterEnabledChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -61,8 +62,20 @@ class SettingsController(QObject):
         if old["lyrics_offset_seconds"] != new["lyrics_offset_seconds"]:
             LOG.info("lyrics_offset_seconds -> %s", new["lyrics_offset_seconds"])
             self.lyricsOffsetSecondsChanged.emit()
+        if old["eq_meter_enabled"] != new["eq_meter_enabled"]:
+            LOG.info("eq_meter_enabled -> %s", new["eq_meter_enabled"])
+            self.eqMeterEnabledChanged.emit()
 
     def _get_lyrics_offset_seconds(self) -> float:
         return self._settings["lyrics_offset_seconds"]
 
+    def _get_eq_meter_enabled(self) -> bool:
+        return self._settings["eq_meter_enabled"]
+
     lyricsOffsetSeconds = Property(float, _get_lyrics_offset_seconds, notify=lyricsOffsetSecondsChanged)
+    # Not read by app/qml -- this build's Main.qml/NowPlayingView.qml don't
+    # touch the matrix panel at all, only MatrixController does (see its
+    # docstring). Exposed as a Q_PROPERTY anyway rather than a plain
+    # attribute purely so MatrixController can connect to
+    # eqMeterEnabledChanged the same way QML would.
+    eqMeterEnabled = Property(bool, _get_eq_meter_enabled, notify=eqMeterEnabledChanged)

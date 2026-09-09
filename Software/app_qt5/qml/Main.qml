@@ -14,8 +14,29 @@ ApplicationWindow {
     title: "AirPlay Desk Display"
     color: Theme.colorBackground
 
+    // One source of truth for "the current track is on screen", shared by
+    // the now-playing panel and the blurred artwork backdrop so the two
+    // fade as a single piece rather than the panel fading while the
+    // background cuts. It waits on nowPlaying.artworkReady as well as the
+    // controller's own trackChanging: the snapshot is published while the
+    // panel is invisible, but the Image still has to decode the new cover
+    // after that, and fading in before it lands is what made the artwork
+    // appear to pop rather than fade.
+    // In "crossfade" mode neither the panel nor the backdrop leaves the
+    // screen: the artwork dissolves in place (CrossfadeImage) while the
+    // text column fades out and back in around it. Gating on
+    // trackChanging/artworkReady here would fade the whole lot out
+    // underneath that -- which is what made the backdrop drop out
+    // mid-crossfade.
+    readonly property bool crossfade: app.settings.transitionMode === "crossfade"
+    readonly property bool showTrack: app.track.sessionActive
+                                      && app.track.contentReady
+                                      && (window.crossfade
+                                          || (!app.track.trackChanging && nowPlaying.artworkReady))
+
     Background {
         anchors.fill: parent
+        showArtwork: window.showTrack
     }
 
     // Everything sizes off Theme.uiScale rather than fixed pixels, so the
@@ -42,6 +63,7 @@ ApplicationWindow {
         property string previousLine: ""
         property string currentLine: ""
         property string nextLine: ""
+        property bool creditsMode: false
     }
 
     Timer {
@@ -55,8 +77,15 @@ ApplicationWindow {
                 // previous/next must land before currentLine: LyricsPanel's
                 // transition reads root.nextLine the instant currentLine
                 // changes, so nextLine has to already be fresh by then.
+                // Same applies to creditsMode, see below.
                 poller.previousLine = app.lyrics.previousLineAt(poller.position)
                 poller.nextLine = app.lyrics.nextLineAt(poller.position)
+                // creditsMode must also land before currentLine: the
+                // rotation triggered by a line change reads the target font
+                // size for each role, and credits use the small size in
+                // every role -- flipping the mode afterwards would animate
+                // the scale to the wrong size first.
+                poller.creditsMode = app.lyrics.creditsActive(poller.position)
                 poller.currentLine = app.lyrics.lineAt(poller.position)
             }
         }
@@ -78,11 +107,14 @@ ApplicationWindow {
         }
 
         NowPlayingView {
+            id: nowPlaying
             Layout.fillWidth: true
             Layout.fillHeight: true
+            showTrack: window.showTrack
             previousLine: poller.previousLine
             currentLine: poller.currentLine
             nextLine: poller.nextLine
+            creditsMode: poller.creditsMode
         }
 
         PlaybackBar {

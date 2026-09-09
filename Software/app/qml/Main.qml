@@ -38,6 +38,7 @@ ApplicationWindow {
         property string previousLine: ""
         property string currentLine: ""
         property string nextLine: ""
+        property real lineProgress: 0
     }
 
     Timer {
@@ -53,6 +54,7 @@ ApplicationWindow {
             poller.previousLine = app.lyrics.previousLineAt(poller.position)
             poller.nextLine = app.lyrics.nextLineAt(poller.position)
             poller.currentLine = app.lyrics.lineAt(poller.position)
+            poller.lineProgress = app.lyrics.currentLineProgress(poller.position)
         }
     }
 
@@ -71,6 +73,7 @@ ApplicationWindow {
             previousLine: poller.previousLine
             currentLine: poller.currentLine
             nextLine: poller.nextLine
+            lineProgress: poller.lineProgress
         }
 
         PlaybackBar {

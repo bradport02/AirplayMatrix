@@ -107,11 +107,17 @@ passthrough, LED matrix output, and the settings web UI.
 
   HDMI-CEC: shairport-sync session hooks → airplay-cec-remote/airplay-tv-power
             (TV power on/off, remote D-pad → AirPlay play/pause/skip)
+            The TV also wakes the moment a device *connects*, before playback:
+            shairport-sync has no connection-level hook, so the kiosk app calls
+            `airplay-tv-power.sh wake` off the metadata stream's own "conn" item.
 
   Settings: airplaymatrix-webui (Flask, :8080) → sudo → airplaymatrix-privileged.py
-            (device name, Wi-Fi, TV timeout, hostname, restarts, reboot)
+            (device name, Wi-Fi, TV timeout, hostname, restarts, reboot, standby,
+             restart-webui)
             → display_settings.py's JSON (lyrics offset, AirPlay connect volume,
-              lyrics/song-details toggles) needs no sudo -- same unprivileged user
+              lyrics/song-details toggles, transition mode + crossfade time,
+              progress-bar dot, EQ meter, lyric sync on connect) needs no sudo --
+              same unprivileged user
 ```
 
 The desk-display app (whichever Qt build), and `matrix_daemon.py`, are
@@ -134,7 +140,10 @@ Software/
   lrclib.py                 lyrics lookup (used by the desk-display app only)
   receiver.py                cross-platform receiver process supervisor (Pi: no-op; Windows: WSL2)
   sps_bridge.py               re-serves the metadata pipe over TCP (Windows/WSL only)
-  display_settings.py           shared show_lyrics/show_details/lyrics_offset_seconds/connect_volume_percent state (JSON under ~/.config), written by the web UI; read by app_qt5 (all four), app/ (lyrics_offset_seconds only), and airplay-tv-power.sh (connect_volume_percent only)
+  display_settings.py           shared display state (JSON under ~/.config), written by the web UI and read
+                                without sudo by the kiosk apps and airplay-tv-power.sh: show_lyrics,
+                                show_details, lyrics_offset_seconds, connect_volume_percent, eq_meter_enabled,
+                                progress_dot_enabled, transition_mode + crossfade_seconds, sync_on_connect
   airplay_name.py                reads the AirPlay device name out of shairport-sync.conf, shared by both kiosk apps' "Discoverable: <name>" idle-screen line
   matrix/
     link.py                    serial protocol to the ESP32/HUB75 firmware
@@ -152,6 +161,8 @@ Software/
   app/
     main.py, app_controller.py, *_controller.py, qml/   the Qt6/PySide6 "Desk Display" kiosk app (Pi 5 / full build)
   app_qt5/
+    sync_controller.py            optional "lyric sync on connect": mutes the receiver at the start of a
+                                    session until metadata/lyrics land, restarts the track, then unmutes
     main.py, app_controller.py, *_controller.py, qml/   the Qt5/PySide2 port of the same app (Pi Zero WH build) --
       settings_controller.py exposes display_settings.py's toggles to QML; lyrics/song-details visibility and
       LyricsController's fetching both gate on them
@@ -203,6 +214,24 @@ docs/
   (same shairport-sync/nqptp source, no Pi-Zero-specific flags), but that
   hasn't been independently re-confirmed on one; if a from-source build
   goes wrong there, `--classic-airplay` is the escape hatch.
+- Track transitions on the Zero WH build are selectable from the web UI:
+  "fade" (out to the background, then in) or "crossfade" (artwork dissolves
+  in place while the title/lyrics fade around it), with a 0.4-5.0s time
+  slider. Crossfade is the more expensive of the two -- it holds two decoded
+  covers at once -- so "fade" remains the default. The blurred backdrop is
+  computed at 1/6 resolution and scaled up precisely so a crossfade doesn't
+  re-blur a full 1080p frame every frame; don't undo that without measuring.
+- End-of-song credits come from the AirPlay stream's DAAP composer field
+  ("ascp"), not from LRCLIB, which carries no credit data of any kind.
+  Whether they appear is entirely up to the sender: Apple populates that
+  field for some tracks and leaves it empty for others, in the same session
+  from the same app. When it's empty nothing is shown, by design.
+- "Lyric sync on connect" (off by default) mutes the receiver at the start
+  of a session until the metadata and lyrics arrive, then restarts the track
+  so the two begin together. It trades a few seconds of silence at the start
+  of the first song for lyrics that are in step for the rest of it. The
+  restart is a best-effort MPRIS `Seek` back to the start, which depends on
+  the sender honouring it.
 - The lyrics-offset and AirPlay-connect-volume web UI settings
   (`display_settings.py`) only exist because of the AirPlay 2 switch above
   -- AirPlay 2's larger output buffer vs. shairport-sync's `prgr` metadata

@@ -19,6 +19,7 @@ resolve correctly:
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -33,8 +34,13 @@ QML_DIR = Path(__file__).resolve().parent / "qml"
 
 
 def main() -> int:
+    # AIRPLAYMATRIX_LOG_LEVEL=DEBUG turns on the per-metadata-item
+    # logging in metadata.py, which is the only way to see what
+    # shairport-sync actually sends for an event (pause in particular --
+    # AirPlay 2 does not necessarily use the same codes AirPlay 1 did).
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        level=os.environ.get("AIRPLAYMATRIX_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
     QCoreApplication.setOrganizationName("AirplayDeskDisplay")

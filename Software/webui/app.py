@@ -146,7 +146,10 @@ def _require_login():
 
 @app.context_processor
 def _inject_csrf():
-    return {"csrf_token": g.get("csrf_token", "")}
+    # receiver_on drives the top-bar power button, which appears on every
+    # page -- so it has to be available to every template, not just the
+    # dashboard's own view.
+    return {"csrf_token": g.get("csrf_token", ""), "receiver_on": receiver_is_on()}
 
 
 _login_attempts: dict[str, float] = {}
@@ -377,19 +380,61 @@ def set_tv_timeout():
     return redirect(url_for("dashboard"))
 
 
+# (flash label, where it's edited from, what it affects) for each boolean
+# display_settings.py toggle this route can flip. show_lyrics/show_details
+# are only read by the Zero WH's Qt5 kiosk app (app_qt5/) -- the Pi 5's Qt6
+# app doesn't read this file for those two, always showing both.
+# eq_meter_enabled is read by MatrixController in *both* builds.
+_DISPLAY_TOGGLES = {
+    "show_lyrics": ("Lyrics", "dashboard", "the desk display"),
+    "show_details": ("Song details", "dashboard", "the desk display"),
+    "eq_meter_enabled": ("EQ meter", "matrix_page", "the LED panel (replacing album art)"),
+    "progress_dot_enabled": ("Progress bar dot", "dashboard", "the desk display"),
+    "sync_on_connect": ("Lyric sync on connect", "dashboard", "the desk display"),
+}
+
+
 @app.route("/settings/display/<key>", methods=["POST"])
 def set_display_setting(key: str):
-    # Only for the Zero WH's Qt5 kiosk app (app_qt5/) -- the Pi 5's Qt6 app
-    # doesn't read this file, always showing both. No sudo/privileged-script
-    # involved: both this process and the kiosk app run as the same
-    # unprivileged user, this is just a JSON file under ~/.config.
-    if key not in display_settings.DEFAULTS:
+    # No sudo/privileged-script involved for any of these: this process and
+    # the kiosk app run as the same unprivileged user, this is just a JSON
+    # file under ~/.config.
+    if key not in _DISPLAY_TOGGLES:
         flash("Unknown display setting.", "error")
         return redirect(url_for("dashboard"))
+    label, redirect_to, affects = _DISPLAY_TOGGLES[key]
     state = request.form.get("state", "") == "on"
     display_settings.set_one(key, state)
-    label = "Song details" if key == "show_details" else "Lyrics"
-    flash(f"{label} {'enabled' if state else 'disabled'} on the desk display.", "ok")
+    flash(f"{label} {'enabled' if state else 'disabled'} on {affects}.", "ok")
+    return redirect(url_for(redirect_to))
+
+
+@app.route("/settings/transition-mode", methods=["POST"])
+def set_transition_mode():
+    """Separate from the boolean toggles above -- this one's an enum."""
+    mode = request.form.get("mode", "")
+    try:
+        display_settings.set_transition_mode(mode)
+    except ValueError:
+        flash("Unknown transition mode.", "error")
+        return redirect(url_for("dashboard"))
+    label = "cross-fade" if mode == "crossfade" else "fade through background"
+    flash(f"Track transitions set to {label} on the desk display.", "ok")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/settings/crossfade-seconds", methods=["POST"])
+def set_crossfade_seconds():
+    raw = request.form.get("seconds", "").strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        flash(f"\"{raw}\" isn't a number.", "error")
+        return redirect(url_for("dashboard"))
+    settings = display_settings.set_crossfade_seconds(seconds)
+    # Report the stored value, not the submitted one -- it's clamped, so
+    # those can differ and the user should see which they actually got.
+    flash(f"Cross-fade time set to {settings['crossfade_seconds']:.1f}s.", "ok")
     return redirect(url_for("dashboard"))
 
 
@@ -460,6 +505,60 @@ def restart_display():
     return redirect(url_for("dashboard"))
 
 
+def receiver_is_on() -> bool:
+    """Whether the AirPlay receiver is currently running -- what the top-bar
+    power button reflects and toggles."""
+    return service_status("shairport-sync") == "active"
+
+
+@app.route("/system/power", methods=["POST"])
+def soft_power():
+    """Standby toggle: the Pi keeps running (so this page still answers),
+    only the AirPlay receiver goes down."""
+    state = request.form.get("state", "")
+    if state not in ("on", "off"):
+        flash("Unknown power state.", "error")
+        return redirect(request.referrer or url_for("dashboard"))
+
+    ok, out = run_privileged("soft-power", state)
+    if ok and state == "off":
+        # Matrix panel goes dark with it. Purely persisted intent for now --
+        # the ESP32 firmware has no power opcode yet (see the /matrix page's
+        # warning), so this is the "have the function ready" half: when that
+        # firmware lands, this is already the right place and the stored
+        # state is already correct.
+        _config["matrix"]["power"] = False
+        _persist_config()
+
+    if ok:
+        flash(
+            "Receiver in standby -- AirPlay is off, this page stays available to switch it back on."
+            if state == "off"
+            else "Receiver active -- AirPlay is discoverable again.",
+            "ok",
+        )
+    else:
+        flash(f"Failed: {out}", "error")
+    return redirect(request.referrer or url_for("dashboard"))
+
+
+@app.route("/system/restart-webui", methods=["POST"])
+def restart_webui():
+    # The redirect below is served by the process that's about to be
+    # restarted -- the privileged helper schedules the restart a couple of
+    # seconds out precisely so this response gets out first. The browser
+    # then reloads the dashboard from the *new* process, which is what makes
+    # picking up new settings/templates possible without an SSH session.
+    ok, out = run_privileged("restart-webui")
+    flash(
+        "Restarting the web UI -- reload this page in a few seconds."
+        if ok
+        else f"Failed: {out}",
+        "ok" if ok else "error",
+    )
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/system/reboot", methods=["POST"])
 def reboot():
     ok, out = run_privileged("reboot")
@@ -519,20 +618,50 @@ def restore_defaults():
 @app.route("/matrix")
 def matrix_page():
     preset_hexes = {h for h, _ in MATRIX_COLOR_PRESETS}
+    display = display_settings.load()
     return render_template(
         "matrix.html",
         matrix=_config["matrix"],
+        # The panel's effective display mode, resolved across both stores --
+        # see set_matrix_mode() for why it's split. eq_meter_enabled wins
+        # because that's the one the panel actually obeys today.
+        matrix_mode="eq_meter" if display["eq_meter_enabled"] else _config["matrix"]["mode"],
         color_presets=MATRIX_COLOR_PRESETS,
         color_is_custom=_config["matrix"]["color"] not in preset_hexes,
+        # Unlike matrix/power/brightness/colour above (webui-local, not
+        # wired to anything yet -- see MATRIX_COLOR_PRESETS' neighbouring
+        # comment), the EQ meter setting lives in display_settings.py's
+        # shared config so MatrixController (app/, app_qt5/) can actually
+        # read it. Same source the dashboard's desk-display cards use.
+        display=display,
     )
 
 
 @app.route("/settings/matrix/mode", methods=["POST"])
 def set_matrix_mode():
+    """The panel's one display mode, spanning two different stores.
+
+    "eq_meter" lives in display_settings.py (MatrixController reads it and
+    acts on it today); "album"/"fixed_color" live in this app's own config
+    and aren't wired to the firmware yet. They're presented as one
+    three-way choice because that's what they actually are -- the EQ meter
+    takes the whole panel over when it's on, so it can't meaningfully
+    coexist with either of the others. Picking album art or fixed colour
+    therefore also switches the EQ meter off, which is what makes those
+    buttons do the one thing a user would expect them to: give the panel
+    back to artwork.
+    """
     mode = request.form.get("mode", "")
-    if mode not in ("album", "fixed_color"):
+    if mode not in ("album", "fixed_color", "eq_meter"):
         flash("Unknown display mode.", "error")
         return redirect(url_for("matrix_page"))
+
+    if mode == "eq_meter":
+        display_settings.set_one("eq_meter_enabled", True)
+        flash("Display mode set to EQ meter on the LED panel.", "ok")
+        return redirect(url_for("matrix_page"))
+
+    display_settings.set_one("eq_meter_enabled", False)
     _config["matrix"]["mode"] = mode
     _persist_config()
     label = "album art" if mode == "album" else "fixed colour"

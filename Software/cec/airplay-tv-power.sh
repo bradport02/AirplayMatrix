@@ -32,6 +32,27 @@ CONNECT_VOLUME_DEFAULT=75
 
 log() { logger -t "$LOG_TAG" "$*"; }
 
+# Whether shairport-sync is playing *right now*, straight from its own MPRIS
+# interface. The standby path below checks this before pulling the trigger.
+#
+# Why it has to: "exiting active state" is fired by a timer shairport-sync
+# started when playback stopped, and the timer is not cancelled by playback
+# resuming -- so pausing for longer than active_state_timeout and then
+# hitting play again lands the TV in standby while the music is audibly
+# playing. That was reported live: a long pause, resume, and the TV went
+# off underneath the resumed track. This turns the hook into "go to standby
+# unless something is actually playing", which is what it always meant.
+is_playing() {
+  local status
+  status=$(dbus-send --system --print-reply=literal \
+             --dest=org.mpris.MediaPlayer2.ShairportSync \
+             /org/mpris/MediaPlayer2 \
+             org.freedesktop.DBus.Properties.Get \
+             string:org.mpris.MediaPlayer2.Player string:PlaybackStatus 2>/dev/null \
+           | tr -d '[:space:]')
+  [[ "$status" == *Playing* ]]
+}
+
 cec() { cec-ctl -d "$CEC_DEV" "$@" >/dev/null 2>&1; }
 
 connect_volume_percent() {
@@ -95,13 +116,32 @@ case "${1:-}" in
     cec --to 0 --active-source phys-addr="$my_phys_addr"
     set_connect_volume "$(connect_volume_percent)"
     ;;
+  wake)
+    # Fired by the display app the moment a device connects (its metadata
+    # stream carries a "conn"/"snam" item roughly half a second before
+    # playback begins) -- shairport-sync itself has no connection-level
+    # hook, only play/active-state ones, so this cannot come from the
+    # conf's sessioncontrol block. Deliberately does NOT set the volume:
+    # that belongs to a session actually starting, not to a device merely
+    # selecting this receiver. Safe to run repeatedly; waking an already-on
+    # TV is a no-op.
+    log "AirPlay device connected -> waking TV"
+    cec --playback --osd-name "$(osd_name)"
+    my_phys_addr=$(cec-ctl -d "$CEC_DEV" -x 2>/dev/null | tail -n1)
+    cec --to 0 --image-view-on
+    cec --to 0 --active-source phys-addr="$my_phys_addr"
+    ;;
   off)
+    if is_playing; then
+      log "idle timeout fired but playback has resumed -> leaving TV on"
+      exit 0
+    fi
     log "AirPlay session ended (5 min idle) -> standby TV"
     cec --playback --osd-name "$(osd_name)"
     cec --to 0 --standby
     ;;
   *)
-    echo "usage: $0 {on|off}" >&2
+    echo "usage: $0 {on|wake|off}" >&2
     exit 1
     ;;
 esac

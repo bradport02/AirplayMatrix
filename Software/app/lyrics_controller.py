@@ -122,6 +122,42 @@ class LyricsController(QObject):
         # *earlier* point on the (unshifted) synced-lyrics timeline.
         return position - self._settings.lyricsOffsetSeconds
 
+    # Assumed length (seconds) of the currently active line when it's the
+    # last line LRCLIB gave us -- there's no next timestamp to measure a real
+    # span against, so the word-wipe below just has to pick something rather
+    # than divide by zero or refuse to animate the last line at all.
+    _FALLBACK_LINE_SPAN = 4.0
+
+    @Slot(float, result=float)
+    def currentLineProgress(self, position: float) -> float:
+        """Fraction (0..1) of the way through the active line's time window,
+        for LyricsPanel.qml's word-by-word "karaoke" fill.
+
+        LRCLIB only carries line-level timestamps -- unlike Apple Music's own
+        catalog, which uses word/syllable-level TTML data for the real thing
+        (see the karaoke-style research behind this feature). There is no
+        per-word timing to read here, so this hands QML a single linear
+        progress value across the whole line, and LyricsPanel.qml's
+        wordThresholds() divides that up between words by character count.
+        It's an estimate, not a transcript of when each word was actually
+        sung, but it tracks the line's real start/end times, so it can't
+        drift the way a fixed per-word duration would on a fast-sung line.
+        """
+        with self._lock:
+            lyrics = self._lyrics
+        if not lyrics:
+            return 0.0
+        pos = self._adjusted(position)
+        idx = lyrics.index_at(pos)
+        if idx < 0:
+            return 0.0
+        start = lyrics.lines[idx].time
+        end = lyrics.lines[idx + 1].time if idx + 1 < len(lyrics.lines) else start + self._FALLBACK_LINE_SPAN
+        span = end - start
+        if span <= 0:
+            return 1.0
+        return max(0.0, min(1.0, (pos - start) / span))
+
     @Slot(float, result=str)
     def lineAt(self, position: float) -> str:
         with self._lock:

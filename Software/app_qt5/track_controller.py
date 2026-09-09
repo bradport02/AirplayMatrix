@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import subprocess
 import threading
 from typing import Callable
 
@@ -23,6 +24,45 @@ from metadata import MetadataItem, MetadataSource, TrackTracker
 LOG = logging.getLogger(__name__)
 
 CONNECTION_POLL_MS = 250
+
+# A track change is not one atomic event: shairport-sync delivers title,
+# artist and album as separate metadata items, and the PICT artwork later
+# still -- often a good deal later, since it's the big one. So the fade is
+# driven off what it's actually waiting for (the new artwork) rather than
+# off a fixed quiet period.
+#
+# The earlier version here restarted a single ~650ms "no more changes"
+# countdown on every arriving item, artwork included, which produced two
+# fades per track: the countdown expired before the artwork showed up, so
+# the panel faded back in still displaying the *previous* track's cover,
+# then the artwork landed and was treated as a fresh change, fading out and
+# in all over again.
+#
+# Now: identity opens the transition, the new artwork closes it. This is
+# just the short beat between the new artwork being decoded and fading back
+# in, so the image is actually ready on screen rather than popping in
+# mid-fade.
+TRACK_SETTLE_MS = 200
+
+# Fallback for a track whose artwork never arrives at all (not every source
+# sends one). Without this the panel would stay faded out for the whole
+# song waiting for something that isn't coming. Observed real-world gap
+# between the title arriving and the cover following it is ~1.5s, so this
+# needs decent headroom above that -- and if it does expire early, late
+# artwork is still published when it turns up (see _on_artwork_touched),
+# it just appears without the fade.
+TRACK_CHANGE_MAX_MS = 3000
+
+# Safety net on the QML fade-out handshake. NowPlayingView reports when the
+# panel reaches zero opacity, but it can only report a *change* -- and the
+# panel is legitimately already at zero in several situations (the artwork
+# for the outgoing track never finished decoding, or a previous publish left
+# it hidden). In those cases the report never comes, and before this the
+# transition simply hung there, leaving the screen blank until the next
+# track. Treating the callback as "whichever happens first" instead of a
+# requirement means a missing report costs a slightly less well-timed fade,
+# never a stuck display. Comfortably longer than Theme.durationSlow (400ms).
+FADE_OUT_GRACE_MS = 700
 
 # shairport-sync's own mute sentinel (see metadata.py's _parse_volume);
 # reused here so "no volume reported yet" and "muted" aren't ambiguous.
@@ -49,6 +89,37 @@ class TrackController(QObject):
     textIsDarkChanged = Signal()
     sessionActiveChanged = Signal()
     bridgeConnectedChanged = Signal()
+    trackChangingChanged = Signal()
+    readyToTransitionChanged = Signal()
+    contentReadyChanged = Signal()
+    # Fires when the *live* track identity changes, ahead of anything being
+    # published to the display. LyricsController listens to this rather than
+    # to titleChanged/artistChanged/albumChanged, which are now deferred
+    # until the fade -- a lyrics lookup is a network round trip and should
+    # start the moment the new track is known, not a second later once it's
+    # on screen.
+    liveIdentityChanged = Signal()
+    # Duration deliberately gets its own signal rather than riding on
+    # liveIdentityChanged: it refines mid-track (prgr's estimate, then a
+    # later astm) without the song having changed, and the lyrics controller
+    # *clears* its lyrics on an identity change. Folding the two together
+    # meant every duration refinement -- and every metadata re-send, such as
+    # editing the play queue -- threw away lyrics that were displaying
+    # perfectly well and re-fetched them.
+    liveDurationChanged = Signal()
+    pendingArtworkChanged = Signal()
+    clientNameChanged = Signal()
+    clientConnectedChanged = Signal()
+    _sessionEnded = Signal()
+    _sessionStarted = Signal()
+    # Internal relays only. _emit_changes runs on the metadata thread, and a
+    # QTimer may only be started/stopped from the thread that owns it, so
+    # the transition timers are driven through these instead -- Qt queues
+    # delivery onto the GUI thread, which is where this object lives. Kept
+    # as two separate signals because the two events mean opposite things
+    # to the transition: identity opens it, artwork closes it.
+    _identityTouched = Signal()
+    _artworkTouched = Signal()
 
     def __init__(
         self, source_factory: Callable[[], MetadataSource], parent: QObject | None = None
@@ -64,9 +135,72 @@ class TrackController(QObject):
         self._lock = threading.Lock()
         self._session_active = False
         self._bridge_connected = False
+
+        # Artwork derivations for whatever the *tracker* currently holds --
+        # i.e. the incoming track, which is not necessarily the one on
+        # screen. Moved into _displayed only by _publish().
         self._artwork_source = ""
         self._corners = ("", "", "", "")  # top-left, top-right, bottom-left, bottom-right
         self._text_is_dark = False  # whether now-playing text should use dark-on-light ink
+
+        # What QML is actually showing. The identity Q_PROPERTYs below read
+        # from here, NOT from the live tracker, and it is only ever
+        # refreshed by _publish() -- which runs while the panel is faded to
+        # invisible. That is the whole mechanism: metadata arrives field by
+        # field over a few hundred milliseconds, and if the bindings tracked
+        # it live the title would visibly swap to the new song while the old
+        # song's artwork was still fading out. Freezing the snapshot means
+        # the outgoing track stays completely intact until it is off screen,
+        # then everything changes at once behind the fade.
+        self._displayed = {
+            "title": "",
+            "artist": "",
+            "album": "",
+            "duration": 0.0,
+            "artwork_source": "",
+            "corners": ("", "", "", ""),
+            "text_is_dark": False,
+        }
+        # Whether _displayed holds a real, settled track yet. Until it does,
+        # NowPlayingView keeps showing the connection/waiting screen rather
+        # than a half-populated now-playing panel.
+        self._content_ready = False
+        # The two conditions _publish() waits on, tracked separately because
+        # they complete independently: the new track's data being complete,
+        # and the outgoing panel having finished fading out.
+        self._settled = False
+        self._faded_out = True
+
+        self._track_changing = False
+        # artwork_revision of whatever is currently *on display*. The
+        # transition waits for the tracker to hold something different from
+        # this -- deliberately not "an artwork item arrived after the title
+        # did". Skipping a track and letting one end naturally deliver the
+        # same pieces in different orders, and when the artwork came first
+        # the old after-the-fact check never matched, so the fade sat there
+        # until the 2.5s fallback fired instead of following the music.
+        # Comparing against what's displayed doesn't care about ordering.
+        self._published_artwork_rev = -1
+
+        self._settle_timer = QTimer(self)
+        self._settle_timer.setSingleShot(True)
+        self._settle_timer.setInterval(TRACK_SETTLE_MS)
+        self._settle_timer.timeout.connect(self._on_track_settled)
+
+        self._fade_grace_timer = QTimer(self)
+        self._fade_grace_timer.setSingleShot(True)
+        self._fade_grace_timer.setInterval(FADE_OUT_GRACE_MS)
+        self._fade_grace_timer.timeout.connect(self._on_fade_grace_expired)
+
+        self._max_wait_timer = QTimer(self)
+        self._max_wait_timer.setSingleShot(True)
+        self._max_wait_timer.setInterval(TRACK_CHANGE_MAX_MS)
+        self._max_wait_timer.timeout.connect(self._on_track_settled)
+
+        self._identityTouched.connect(self._on_identity_touched)
+        self._artworkTouched.connect(self._on_artwork_touched)
+        self._sessionEnded.connect(self._on_session_ended)
+        self._sessionStarted.connect(self._on_session_started)
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(CONNECTION_POLL_MS)
@@ -81,20 +215,75 @@ class TrackController(QObject):
     def _run(self, source_factory: Callable[[], MetadataSource]) -> None:
         source = source_factory()
         self._source = source  # publishes to the GUI-thread poll; see _poll_connection
+        self._probe_existing_session()
         for item in source.items():
             self._handle_item(item)
+
+    def _probe_existing_session(self) -> None:
+        """Notice a session that was already under way before we started.
+
+        The metadata pipe is a stream of *events*, not state: "pbeg" fires
+        once when playback begins and is never repeated, and nothing else
+        arrives between track changes. So an app that attaches mid-song --
+        after a restart, a crash, or simply being started late -- sees no
+        evidence of the session at all and sits with sessionActive false.
+        That stops the QML poll timer dead (running: sessionActive), which
+        means no progress bar and no lyrics for the rest of the track,
+        however well they fetched.
+
+        shairport-sync's MPRIS interface does expose state rather than
+        events, so one question at startup settles it. Runs on this
+        background thread, not the GUI thread, because it shells out.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "dbus-send", "--system", "--print-reply=literal",
+                    "--dest=org.mpris.MediaPlayer2.ShairportSync",
+                    "/org/mpris/MediaPlayer2",
+                    "org.freedesktop.DBus.Properties.Get",
+                    "string:org.mpris.MediaPlayer2.Player", "string:PlaybackStatus",
+                ],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            LOG.debug("could not probe for an existing session: %s", exc)
+            return
+        if "Playing" not in result.stdout:
+            return
+        with self._lock:
+            if self._session_active:
+                return
+            self._session_active = True
+        LOG.info("AirPlay session already in progress at startup")
+        self.sessionActiveChanged.emit()
 
     def _handle_item(self, item: MetadataItem) -> None:
         with self._lock:
             changed = self._tracker.apply(item)
 
             session_changed = False
-            if item.type == "ssnc" and item.code == "pbeg" and not self._session_active:
+            session_ended = False
+            # "pbeg" is the proper session-start event, but it fires exactly
+            # once, at the moment playback begins. Anything that attaches to
+            # the stream later -- this app restarting mid-song, most
+            # obviously -- never sees it and would sit there believing no
+            # session exists, with the poll timer (running: sessionActive)
+            # stopped: no progress bar, and no lyrics however well they
+            # fetched. The other three are all unambiguous evidence that a
+            # session is underway right now, so any of them will do to
+            # notice one already in progress.
+            if (
+                item.type == "ssnc"
+                and item.code in ("pbeg", "prgr", "pres", "prsm")
+                and not self._session_active
+            ):
                 self._session_active = True
                 session_changed = True
             elif item.type == "ssnc" and item.code == "pend" and self._session_active:
                 self._session_active = False
                 session_changed = True
+                session_ended = True
                 # pend itself carries no artwork-clear -- that's normally
                 # only a zero-length PICT mid-session -- so without this
                 # the last track's artwork keeps showing (background,
@@ -108,6 +297,10 @@ class TrackController(QObject):
                 self._rebuild_artwork_source()
 
         self._emit_changes(changed, session_changed)
+        if session_ended:
+            self._sessionEnded.emit()
+        elif session_changed and self._session_active:
+            self._sessionStarted.emit()
 
     def _clear_artwork_locked(self) -> bool:
         """Caller holds self._lock. Returns True if artwork actually changed."""
@@ -146,25 +339,315 @@ class TrackController(QObject):
         # Qt auto-queues signal delivery to the GUI thread, so emitting here
         # from the background thread is safe -- the connected slots just run
         # later, on the thread that owns this QObject.
-        if "title" in changed:
-            self.titleChanged.emit()
-        if "artist" in changed:
-            self.artistChanged.emit()
-        if "album" in changed:
-            self.albumChanged.emit()
-        if "duration" in changed:
-            self.durationChanged.emit()
+        #
+        # Note what is NOT emitted here any more: title/artist/album/
+        # duration/artwork/corners/textIsDark. Those describe *which track*
+        # and are published as one atomic batch by _publish(), behind the
+        # fade. Only genuinely live transport state goes out immediately.
         if "playing" in changed:
             self.playingChanged.emit()
         if "volume" in changed:
             self.volumeChanged.emit()
-        if "artwork" in changed or "artwork_revision" in changed:
-            self.artworkChanged.emit()
-            self.cornersChanged.emit()
-            self.textIsDarkChanged.emit()
         if session_changed:
             LOG.info("AirPlay session %s", "started" if self._session_active else "ended")
             self.sessionActiveChanged.emit()
+
+        if "client_name" in changed:
+            self.clientNameChanged.emit()
+        if "client_connected" in changed:
+            self.clientConnectedChanged.emit()
+        if changed & {"artwork", "artwork_revision"}:
+            self.pendingArtworkChanged.emit()
+        if changed & {"title", "artist", "album"}:
+            self.liveIdentityChanged.emit()
+        if "duration" in changed:
+            self.liveDurationChanged.emit()
+
+        # Deliberately not position/playing/volume: those change constantly
+        # mid-track and would keep the panel faded out forever.
+        if changed & {"title", "artist", "album"}:
+            self._identityTouched.emit()
+        if changed & {"artwork", "artwork_revision"}:
+            self._artworkTouched.emit()
+
+    # -- GUI-thread transition window --
+
+    def _on_identity_touched(self) -> None:
+        # Only the *first* identity item opens the transition. The others
+        # (artist, album) arrive right behind it and must not reopen or
+        # extend anything -- what the panel is waiting on from here is the
+        # artwork, and that's what _on_artwork_touched resolves.
+        if self._track_changing:
+            return
+        LOG.debug("transition: opened (content_ready=%s)", self._content_ready)
+        self._settled = False
+        self._track_changing = True
+        self.readyToTransitionChanged.emit()
+        # Assume a fade-out is owed, and let either QML's report or the
+        # grace timer satisfy it -- see FADE_OUT_GRACE_MS for why this can't
+        # be inferred from _content_ready.
+        self._faded_out = False
+        self.trackChangingChanged.emit()
+        self._settle_timer.stop()
+        if self._artwork_is_new():
+            # The new cover is already here -- it arrived with, or ahead of,
+            # the title. Nothing left to wait for beyond the short settle.
+            self._settle_timer.start()
+        else:
+            self._max_wait_timer.start()
+
+    def _artwork_is_new(self) -> bool:
+        """Whether the tracker holds real, not-yet-displayed artwork.
+
+        Requires actual bytes, not just a revision bump. Senders emit a
+        zero-length PICT to clear the outgoing cover roughly a second
+        before delivering the incoming one, and that clear bumps the
+        revision too -- taking it as "the new artwork is here" published
+        the track with no artwork at all, and the real cover then arrived
+        after the transition had already closed.
+        """
+        with self._lock:
+            state = self._tracker.state
+            return state.artwork is not None and (
+                state.artwork_revision != self._published_artwork_rev
+            )
+
+    def _on_artwork_touched(self) -> None:
+        if not self._artwork_is_new():
+            return
+        if not self._track_changing:
+            # Artwork for a track that has already been published -- the
+            # sender was slower than TRACK_CHANGE_MAX_MS, or it updated the
+            # cover mid-track. Publishing it straight away means it appears
+            # (without a fade, since the panel is already up) rather than
+            # being dropped on the floor, which is what used to happen to
+            # any artwork that missed its transition.
+            #
+            # Gated on _content_ready, and that matters: on a fresh connect
+            # the artwork routinely arrives *before* the title, and without
+            # this guard that first PICT published a snapshot with an empty
+            # title and flipped _content_ready on -- which put the progress
+            # bar on screen next to a blank panel. There is no track to
+            # update until a real one has been published.
+            if self._session_active and self._content_ready:
+                LOG.debug("late artwork -- publishing without a transition")
+                self._publish()
+            return
+        self._max_wait_timer.stop()
+        self._settle_timer.start()
+
+    def _on_track_settled(self) -> None:
+        """The incoming track's data is as complete as it's going to get."""
+        self._settle_timer.stop()
+        self._max_wait_timer.stop()
+        LOG.debug("transition: data settled (faded_out=%s)", self._faded_out)
+        self._settled = True
+        # Only now can the visible fade begin in crossfade mode (the panel
+        # holds the outgoing track until the data is complete), so this is
+        # where the backstop starts counting. Starting it back when the
+        # change was first noticed meant it expired during the ~1.5s wait
+        # for artwork and declared the fade finished before it had begun --
+        # which published the new track straight onto a fully visible
+        # panel, and only then let it fade. Skipped when QML has already
+        # reported (fade mode fades immediately, so it usually has).
+        self.readyToTransitionChanged.emit()
+        if not self._faded_out:
+            self._fade_grace_timer.start()
+        self._try_publish()
+
+    def _on_session_started(self) -> None:
+        """Put the current track back on screen when a session resumes.
+
+        Sessions do not only start when someone presses play: the metadata
+        FIFO EOFs briefly whenever shairport-sync reopens it, which reads as
+        the session ending and starting again a second later. _on_session_ended
+        clears content_ready (so the *next* connection opens on the waiting
+        screen), and normally a transition would republish -- but only an
+        identity *change* opens one, and after a blip like this the track is
+        the same one that was already playing. Nothing changed, so nothing
+        republished, and the display sat on "Loading track..." indefinitely
+        with a perfectly good track underneath it.
+
+        Publishing directly is right here: there is nothing to transition
+        between, the same track simply needs to be shown again.
+        """
+        if self._content_ready:
+            return
+        with self._lock:
+            has_track = bool(self._tracker.state.title)
+        if not has_track:
+            return  # genuinely nothing to show yet; wait for metadata
+        LOG.debug("session resumed with a track already known -- republishing")
+        self._settle_timer.stop()
+        self._max_wait_timer.stop()
+        self._fade_grace_timer.stop()
+        self._settled = True
+        self._faded_out = True
+        self._publish()
+
+    def _on_session_ended(self) -> None:
+        """Back to a clean slate, so the next connection starts from the
+        waiting screen and fades in fresh rather than flashing up the last
+        session's track."""
+        self._settle_timer.stop()
+        self._max_wait_timer.stop()
+        self._fade_grace_timer.stop()
+        self._settled = False
+        self._faded_out = True
+        if self._track_changing:
+            self._track_changing = False
+            self.trackChangingChanged.emit()
+            self.readyToTransitionChanged.emit()
+        if self._content_ready:
+            self._content_ready = False
+            self.contentReadyChanged.emit()
+
+    @Slot()
+    def fadeOutComplete(self) -> None:
+        """Called from NowPlayingView.qml the moment the panel reaches zero
+        opacity. Swapping the displayed track any earlier than this is
+        exactly the bug this whole mechanism exists to avoid."""
+        LOG.debug("transition: fade-out reported by QML (settled=%s)", self._settled)
+        self._fade_grace_timer.stop()
+        self._faded_out = True
+        self._try_publish()
+
+    def _on_fade_grace_expired(self) -> None:
+        """QML didn't report a fade-out in time -- most likely because the
+        panel was already invisible and its opacity never changed."""
+        LOG.debug("transition: fade-out grace expired (settled=%s)", self._settled)
+        self._faded_out = True
+        self._try_publish()
+
+    def _try_publish(self) -> None:
+        if self._settled and self._faded_out:
+            self._publish()
+
+    def _publish(self) -> None:
+        """Move the incoming track into _displayed and let the panel back in.
+
+        Everything changes in one go while nothing is visible, so the panel
+        never shows a mix of two tracks.
+        """
+        self._fade_grace_timer.stop()
+        with self._lock:
+            state = self._tracker.state
+            new = {
+                "title": state.title,
+                "artist": state.artist,
+                "album": state.album,
+                "duration": state.duration,
+                "artwork_source": self._artwork_source,
+                "corners": self._corners,
+                "text_is_dark": self._text_is_dark,
+            }
+            old, self._displayed = self._displayed, new
+            self._published_artwork_rev = state.artwork_revision
+
+        if old["title"] != new["title"]:
+            self.titleChanged.emit()
+        if old["artist"] != new["artist"]:
+            self.artistChanged.emit()
+        if old["album"] != new["album"]:
+            self.albumChanged.emit()
+        if old["duration"] != new["duration"]:
+            self.durationChanged.emit()
+        if old["artwork_source"] != new["artwork_source"]:
+            self.artworkChanged.emit()
+        if old["corners"] != new["corners"]:
+            self.cornersChanged.emit()
+        if old["text_is_dark"] != new["text_is_dark"]:
+            self.textIsDarkChanged.emit()
+
+        LOG.debug("transition: published %r", new["title"])
+        if not self._content_ready:
+            self._content_ready = True
+            self.contentReadyChanged.emit()
+
+        # Last, so QML applies the new content before it starts fading it in.
+        if self._track_changing:
+            self._track_changing = False
+            self.trackChangingChanged.emit()
+            self.readyToTransitionChanged.emit()
+
+    def _get_client_name(self) -> str:
+        with self._lock:
+            return self._tracker.state.client_name
+
+    # Deliberately live rather than part of the published snapshot: the
+    # connection screen shows this *before* there is any track to publish.
+    clientName = Property(str, _get_client_name, notify=clientNameChanged)
+
+    def _get_pending_artwork_source(self) -> str:
+        with self._lock:
+            return self._artwork_source
+
+    # The *incoming* track's artwork, as soon as its bytes have been decoded
+    # to a data URL -- which is roughly a second and a half before the
+    # snapshot it belongs to is published. Lets QML decode the new cover
+    # into an offscreen layer during that wait, so the transition doesn't
+    # have to stop and decode when it starts. Not what the panel displays;
+    # that's artworkSource, which stays on the published snapshot.
+    pendingArtworkSource = Property(
+        str, _get_pending_artwork_source, notify=pendingArtworkChanged
+    )
+
+    def _get_client_connected(self) -> bool:
+        with self._lock:
+            return self._tracker.state.client_connected
+
+    # A device is connected but may not have started streaming yet. Also
+    # live, for the same reason clientName is.
+    clientConnected = Property(bool, _get_client_connected, notify=clientConnectedChanged)
+
+    def _get_track_changing(self) -> bool:
+        return self._track_changing
+
+    def _get_ready_to_transition(self) -> bool:
+        return self._track_changing and self._settled
+
+    # True from the moment a new track's metadata starts arriving until
+    # TRACK_SETTLE_MS after the last of it lands. NowPlayingView.qml fades
+    # the now-playing panel out while it's set, so the switch reads as one
+    # deliberate transition rather than fields visibly popping in one by one.
+    trackChanging = Property(bool, _get_track_changing, notify=trackChangingChanged)
+    # A change is in flight AND the incoming track's data is complete -- so
+    # the visible transition can run start to finish without stopping to
+    # wait for anything. Crossfade mode holds the outgoing track fully on
+    # screen until this turns true: the artwork arrives about a second and a
+    # half after the title, and fading out on the title alone left the
+    # display sitting empty for that whole gap.
+    readyToTransition = Property(
+        bool, _get_ready_to_transition, notify=readyToTransitionChanged
+    )
+
+    def _get_content_ready(self) -> bool:
+        return self._content_ready
+
+    # False until the first track of a session has been published. Keeps
+    # NowPlayingView on the connection/waiting screen rather than showing a
+    # now-playing panel that is still filling itself in, and gives that
+    # screen something to cross-fade *out of* when the track arrives.
+    contentReady = Property(bool, _get_content_ready, notify=contentReadyChanged)
+
+    def live_identity(self) -> tuple[str, str, str]:
+        """(artist, title, album) as the metadata stream has them right now,
+        ahead of any fade. For LyricsController, which must start its lookup
+        immediately -- not for anything that draws."""
+        with self._lock:
+            state = self._tracker.state
+            return (state.artist, state.title, state.album)
+
+    def live_composer(self) -> str:
+        """Songwriting credits as delivered ("A, B & C"), or "" if the
+        sender didn't provide any. For LyricsController's end-of-song
+        credits; nothing draws this directly."""
+        with self._lock:
+            return self._tracker.state.composer
+
+    def live_duration(self) -> float:
+        with self._lock:
+            return self._tracker.state.duration
 
     # -- GUI-thread connection poll --
 
@@ -197,21 +680,24 @@ class TrackController(QObject):
 
     # -- Q_PROPERTY surface --
 
+    # These read the published snapshot, not the live tracker -- see
+    # _displayed in __init__ and _publish().
+
     def _get_title(self) -> str:
         with self._lock:
-            return self._tracker.state.title
+            return self._displayed["title"]
 
     def _get_artist(self) -> str:
         with self._lock:
-            return self._tracker.state.artist
+            return self._displayed["artist"]
 
     def _get_album(self) -> str:
         with self._lock:
-            return self._tracker.state.album
+            return self._displayed["album"]
 
     def _get_duration(self) -> float:
         with self._lock:
-            return self._tracker.state.duration
+            return self._displayed["duration"]
 
     def _get_playing(self) -> bool:
         with self._lock:
@@ -224,27 +710,27 @@ class TrackController(QObject):
 
     def _get_artwork_source(self) -> str:
         with self._lock:
-            return self._artwork_source
+            return self._displayed["artwork_source"]
 
     def _get_corner_top_left(self) -> str:
         with self._lock:
-            return self._corners[0]
+            return self._displayed["corners"][0]
 
     def _get_corner_top_right(self) -> str:
         with self._lock:
-            return self._corners[1]
+            return self._displayed["corners"][1]
 
     def _get_corner_bottom_left(self) -> str:
         with self._lock:
-            return self._corners[2]
+            return self._displayed["corners"][2]
 
     def _get_corner_bottom_right(self) -> str:
         with self._lock:
-            return self._corners[3]
+            return self._displayed["corners"][3]
 
     def _get_text_is_dark(self) -> bool:
         with self._lock:
-            return self._text_is_dark
+            return self._displayed["text_is_dark"]
 
     def artwork_bytes(self) -> bytes | None:
         """Raw artwork as delivered (JPEG or PNG), for non-QML consumers

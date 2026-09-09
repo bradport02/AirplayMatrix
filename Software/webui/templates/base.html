@@ -15,6 +15,20 @@
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' }}" title="Settings" aria-label="Settings">{{ icon('sliders') }} <span class="nav-label">Settings</span></a>
       <a href="{{ url_for('wifi_page') }}" class="{{ 'active' if request.endpoint == 'wifi_page' }}" title="Wi-Fi" aria-label="Wi-Fi">{{ icon('wifi') }} <span class="nav-label">Wi-Fi</span></a>
       <a href="{{ url_for('matrix_page') }}" class="{{ 'active' if request.endpoint == 'matrix_page' }}" title="Matrix" aria-label="Matrix">{{ icon('grid') }} <span class="nav-label">Matrix</span></a>
+      {# Standby toggle. Submits the state we want to move *to*, rather than
+         a bare "toggle", so a stale page can't flip the receiver the wrong
+         way round. Glows red while the receiver is running. #}
+      <form method="post" action="{{ url_for('soft_power') }}" class="inline"
+            onsubmit="return {{ 'confirm(\'Put the AirPlay receiver into standby?\\n\\nThe Pi stays on and this page keeps working, so you can switch it back on from here.\')' if receiver_on else 'true' }};">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="state" value="{{ 'off' if receiver_on else 'on' }}">
+        <button type="submit" class="link-button power-toggle {{ 'is-on' if receiver_on }}"
+                title="{{ 'AirPlay receiver is on -- click for standby' if receiver_on else 'AirPlay receiver is in standby -- click to switch on' }}"
+                aria-label="{{ 'Put receiver into standby' if receiver_on else 'Switch receiver on' }}"
+                aria-pressed="{{ 'true' if receiver_on else 'false' }}">
+          {{ icon('power') }} <span class="nav-label">{{ 'On' if receiver_on else 'Standby' }}</span>
+        </button>
+      </form>
       <form method="post" action="{{ url_for('logout') }}" class="inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="link-button" title="Log out" aria-label="Log out">{{ icon('logout') }} <span class="nav-label">Log out</span></button>

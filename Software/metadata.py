@@ -212,14 +212,29 @@ class TrackState:
     artist: str = ""
     album: str = ""
     genre: str = ""
+    composer: str = ""  # songwriting credits, see the "ascp" mapping below
     duration: float = 0.0  # seconds
     artwork: Optional[bytes] = None  # raw JPEG or PNG as delivered
     artwork_revision: int = 0  # increments on every new PICT
     playing: bool = False
     volume: Optional[float] = None  # AirPlay volume, -30.0..0.0 dB, or None
+    # Name of the device that connected ("Brad's iPhone"), from shairport-
+    # sync's "snam" item. Sent during the connection handshake, before pbeg
+    # opens the session, so it's available to show while the first track's
+    # metadata is still arriving.
+    client_name: str = ""
+    # True from the moment a device connects ("conn") until it drops
+    # ("disc"). Distinct from a session being active: the phone connects and
+    # announces itself roughly half a second before it starts streaming, and
+    # the display has something worth saying during that gap.
+    client_connected: bool = False
 
     _anchor_wall: float = field(default=0.0, repr=False)
     _anchor_pos: float = field(default=0.0, repr=False)
+    # When the last "prgr" landed, so a title change can tell whether the
+    # current anchor came from a real progress report or is left over from
+    # the previous track. -inf means "no prgr has ever been seen".
+    _prgr_wall: float = field(default=float("-inf"), repr=False)
 
     def position(self) -> float:
         """Dead-reckoned playback position in seconds.
@@ -234,6 +249,22 @@ class TrackState:
         elapsed = time.monotonic() - self._anchor_wall
         pos = self._anchor_pos + elapsed
         return min(pos, self.duration) if self.duration else pos
+
+    # How recently a prgr must have arrived to be treated as belonging to
+    # the track whose title just arrived.
+    #
+    # Deliberately tight. shairport-sync sends prgr and the new title within
+    # a few tens of milliseconds of each other, but in either order, so this
+    # only has to bridge that gap. Set too wide (5s was the first attempt)
+    # it reaches back and mistakes the *previous* track's progress report
+    # for the new track's -- which carries the old position across the
+    # change, and since position() clamps to the track duration it shows up
+    # as the elapsed time frozen at the end of the bar until a real prgr
+    # lands. If none ever does, it stays frozen for the whole song.
+    PRGR_FRESH_SECONDS = 1.0
+
+    def prgr_is_fresh(self) -> bool:
+        return (time.monotonic() - self._prgr_wall) < self.PRGR_FRESH_SECONDS
 
     def anchor(self, position: float) -> None:
         self._anchor_pos = max(0.0, position)
@@ -258,12 +289,29 @@ class TrackTracker:
         changed: set[str] = set()
         st = self.state
 
+        # Every session event as it arrives, for working out what a given
+        # transport action actually sends -- see main.py's
+        # AIRPLAYMATRIX_LOG_LEVEL. PICT is excluded because its payload is
+        # the whole cover image and it arrives constantly; the rest are
+        # short. Guarded on isEnabledFor so the text() decode doesn't happen
+        # at all at normal log levels.
+        if LOG.isEnabledFor(logging.DEBUG) and item.code != "PICT":
+            LOG.debug("%s %s %r", item.type, item.code, item.text()[:80])
+        elif item.code == "PICT" and LOG.isEnabledFor(logging.DEBUG):
+            # Payload is the whole cover, so log its size rather than itself.
+            LOG.debug("ssnc PICT (%d bytes)", len(item.data or b""))
+
         if item.type == "core":
             mapping = {
                 "minm": "title",
                 "asar": "artist",
                 "asal": "album",
                 "asgn": "genre",
+                # DAAP "song composer". Apple populates this with the
+                # songwriting credits ("Olivia Rodrigo, Daniel Nigro & Casey
+                # Smith"), which is the only credit information anything in
+                # this pipeline actually receives -- LRCLIB carries none.
+                "ascp": "composer",
             }
             attr = mapping.get(item.code)
             if attr:
@@ -271,6 +319,35 @@ class TrackTracker:
                 if getattr(st, attr) != value:
                     setattr(st, attr, value)
                     changed.add(attr)
+                    if attr == "title" and not st.prgr_is_fresh():
+                        # A new title is a new track, so the dead-reckoning
+                        # anchor has to go back to the start. Normally a
+                        # "prgr" arrives moments later and re-anchors
+                        # anyway, which is why this was never needed -- but
+                        # prgr is not guaranteed, and when it doesn't come
+                        # the position keeps extrapolating along the
+                        # *previous* track's timeline. Since position() also
+                        # clamps to the duration, that shows up as the
+                        # progress bar pinned at the full length of the new
+                        # track and lyrics looked up past their last line,
+                        # i.e. no lyrics at all. Observed live on a track
+                        # that got no prgr.
+                        #
+                        # Only the title triggers this: artist or album can
+                        # change on their own mid-track (metadata refining)
+                        # without the song having changed, and rewinding to
+                        # zero for those would be wrong.
+                        #
+                        # And only when no prgr has just been seen. In
+                        # practice shairport-sync emits prgr for the new
+                        # track a few tens of milliseconds *before* the
+                        # title, so resetting unconditionally threw away the
+                        # correct anchor that had only just been set and put
+                        # playback back to zero -- which showed up as lyrics
+                        # running behind the music for the rest of the
+                        # track. A fresh prgr is authoritative; this reset
+                        # is only the fallback for when none arrives at all.
+                        st.anchor(0.0)
             elif item.code == "astm":
                 # DAAP song time, milliseconds, big-endian u32.
                 if len(item.data) == 4:
@@ -292,6 +369,7 @@ class TrackTracker:
                 if parsed is not None:
                     position, duration = parsed
                     st.anchor(position)
+                    st._prgr_wall = time.monotonic()
                     st.playing = True
                     changed.add("position")
                     # Prefer astm when present; prgr end-of-stream can lag on
@@ -300,20 +378,59 @@ class TrackTracker:
                         st.duration = duration
                         changed.add("duration")
 
-            elif item.code in ("pbeg", "prsm"):
+            # "pres"/"paus" are what AirPlay 2 actually sends for resume and
+            # pause; "prsm"/"pfls" are the AirPlay 1 spellings. Both are
+            # accepted because this project runs on devices in either mode
+            # (see setup.sh's --classic-airplay). Missing the AP2 pair was
+            # why a paused track kept advancing: nothing ever cleared
+            # `playing`, so TrackState.position() carried on dead-reckoning
+            # against the wall clock, taking the lyrics and the progress bar
+            # with it.
+            elif item.code in ("pbeg", "prsm", "pres"):
                 if not st.playing:
-                    st.playing = True
+                    # Re-anchor *before* flipping playing, not after. position()
+                    # branches on that flag: read while still paused it returns
+                    # the frozen _anchor_pos (what we want to resume from),
+                    # but read once playing is already True it adds the wall
+                    # time since the last anchor -- i.e. the entire length of
+                    # the pause -- so resuming jumped the position forward by
+                    # however long the track sat paused. The pause path below
+                    # already had this order right.
                     st.anchor(st.position())
+                    st.playing = True
                     changed.add("playing")
 
-            elif item.code in ("pend", "pfls"):
-                # pfls is a flush, which is what pause looks like on the wire.
+            elif item.code in ("pend", "pfls", "paus"):
+                # pfls is a flush, which is what pause looked like on the
+                # wire under AirPlay 1; "paus" is AirPlay 2's explicit
+                # version. Only "pend" (session over) rewinds to zero --
+                # a pause has to hold its position so resuming picks up
+                # where it left off.
                 if st.playing:
                     st.anchor(st.position())
                     st.playing = False
                     changed.add("playing")
                 if item.code == "pend":
                     st.anchor(0.0)
+
+            elif item.code == "snam":
+                name = item.text()
+                if name != st.client_name:
+                    st.client_name = name
+                    changed.add("client_name")
+                if not st.client_connected:
+                    st.client_connected = True
+                    changed.add("client_connected")
+
+            elif item.code == "conn":
+                if not st.client_connected:
+                    st.client_connected = True
+                    changed.add("client_connected")
+
+            elif item.code == "disc":
+                if st.client_connected:
+                    st.client_connected = False
+                    changed.add("client_connected")
 
             elif item.code == "pvol":
                 parsed = self._parse_volume(item.text())

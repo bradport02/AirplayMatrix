@@ -196,6 +196,57 @@ def cmd_restart_display(_args: argparse.Namespace) -> None:
     print("OK")
 
 
+def cmd_soft_power(args: argparse.Namespace) -> None:
+    """Standby, not shutdown: stop (or start) the AirPlay receiver only.
+
+    The Pi itself stays up, which is the whole point -- the web UI has to
+    keep running so it can be told to switch back on. A real poweroff has no
+    remote wake on this hardware (see cmd_poweroff), so "off" here means
+    "stop advertising and receiving AirPlay" rather than cutting the power.
+
+    --now on both so the change takes effect immediately as well as
+    persisting across a reboot: a receiver the user has deliberately put in
+    standby shouldn't quietly come back on when the Pi restarts.
+    """
+    if args.state == "off":
+        r = run(["systemctl", "disable", "--now", "shairport-sync"], timeout=30.0)
+        action = "standby"
+    else:
+        r = run(["systemctl", "enable", "--now", "shairport-sync"], timeout=30.0)
+        action = "active"
+    if r.returncode != 0:
+        fail(f"could not switch receiver to {action}: {r.stderr.strip()}")
+    print(f"OK ({action})")
+
+
+def cmd_restart_webui(_args: argparse.Namespace) -> None:
+    # Deliberately NOT a plain `systemctl restart` like cmd_restart_service:
+    # the unit being restarted is the web UI itself, so a synchronous restart
+    # kills this process's own parent mid-request and the browser gets a
+    # connection reset instead of a response. Same delayed transient timer
+    # the reboot/poweroff commands use, for the same reason -- let the HTTP
+    # response go out first, then take the service down.
+    #
+    # It's also why this isn't just airplaymatrix-webui added to
+    # RESTARTABLE_SERVICES: restarting yourself is a different operation
+    # from restarting something else, not the same one with a different
+    # argument.
+    r = run(
+        [
+            "systemd-run",
+            "--on-active=2",
+            "--unit=airplaymatrix-webui-restart",
+            "systemctl",
+            "restart",
+            "airplaymatrix-webui",
+        ],
+        timeout=10.0,
+    )
+    if r.returncode != 0:
+        fail(f"failed to schedule web UI restart: {r.stderr.strip()}")
+    print("OK (restarting in ~2s)")
+
+
 def cmd_reboot(_args: argparse.Namespace) -> None:
     # Fire-and-forget a delayed reboot via a transient timer so this process
     # (and the Flask request that's still holding the connection open) can
@@ -284,6 +335,13 @@ def main() -> int:
 
     p = sub.add_parser("restart-display")
     p.set_defaults(func=cmd_restart_display)
+
+    p = sub.add_parser("restart-webui")
+    p.set_defaults(func=cmd_restart_webui)
+
+    p = sub.add_parser("soft-power")
+    p.add_argument("state", choices=["on", "off"])
+    p.set_defaults(func=cmd_soft_power)
 
     p = sub.add_parser("reboot")
     p.set_defaults(func=cmd_reboot)

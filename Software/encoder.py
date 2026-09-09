@@ -67,6 +67,14 @@ def downscale(data: bytes, resample: str = "lanczos") -> Image.Image:
     Alpha is flattened onto black, matching an unlit panel pixel.
     """
     img = Image.open(io.BytesIO(data))
+    # Same trick as quadrant_colors(): let the JPEG decoder do the first,
+    # cheapest chunk of the downscale itself instead of decoding 1400x1400
+    # only to throw ~99.8% of the pixels away. The target is MATRIX_SIZE*4
+    # rather than MATRIX_SIZE so there is still plenty of headroom for the
+    # centre-crop and the reduce()/resize() quality passes below to work
+    # with -- draft() only ever picks a scale at or above what's asked for,
+    # so this cannot leave those passes upscaling. No-op for PNG.
+    img.draft("RGB", (MATRIX_SIZE * 4, MATRIX_SIZE * 4))
     img.load()
 
     if img.mode in ("RGBA", "LA", "P"):
@@ -114,7 +122,22 @@ def encode(
     except (OSError, ValueError) as exc:
         LOG.warning("artwork decode failed: %s", exc)
         return None
+    return encode_image(img, quality=quality, max_bytes=max_bytes)
 
+
+def encode_image(
+    img: Image.Image,
+    quality: int = 85,
+    max_bytes: Optional[int] = None,
+) -> Optional[EncodedArtwork]:
+    """JPEG-encode and base64 an already-MATRIX_SIZE-square image.
+
+    Factored out of encode() so a caller that builds its own MATRIX_SIZE
+    image directly -- Software/matrix/eq_meter.py's bar-graph frames, rather
+    than a decoded/downscaled cover -- gets the exact same wire format
+    (baseline, 4:4:4, quality-ladder-on-budget) without a decode step that
+    doesn't apply to it.
+    """
     for attempt_quality in _quality_ladder(quality):
         buf = io.BytesIO()
         img.save(
@@ -130,7 +153,7 @@ def encode(
         if max_bytes is None or len(b64) <= max_bytes:
             return EncodedArtwork(jpeg=jpeg, b64=b64, quality=attempt_quality)
 
-    LOG.warning("artwork could not be fitted into %s base64 bytes", max_bytes)
+    LOG.warning("image could not be fitted into %s base64 bytes", max_bytes)
     return None
 
 
@@ -185,6 +208,17 @@ def quadrant_colors(data: bytes) -> Optional[QuadrantColors]:
     which is cheaper and simpler than sampling/averaging pixels by hand."""
     try:
         img = Image.open(io.BytesIO(data))
+        # The answer here is four averaged pixels, so decoding a 1400x1400
+        # cover at full size to compute it is almost all wasted work.
+        # draft() asks the JPEG decoder for the smallest DCT scale that
+        # still covers the requested size, which it can do during
+        # decompression rather than by decoding-then-shrinking -- typically
+        # an order of magnitude less work and peak memory. It is a no-op
+        # for PNG (and for JPEGs already smaller than this), so the
+        # non-JPEG path is unaffected. 64px is far more than a 2x2 box
+        # average needs, and stays well clear of changing the averages
+        # enough to flip legible_text_is_dark()'s contrast decision.
+        img.draft("RGB", (64, 64))
         img.load()
         img = img.convert("RGB")
     except (OSError, ValueError) as exc:

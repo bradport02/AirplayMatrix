@@ -19,6 +19,7 @@ import airplay_name
 from metadata import MetadataSource, PipeSource, TcpSource
 from receiver import NullSupervisor, ReceiverSupervisor, WslProcessSupervisor
 
+from .eq_controller import EqController
 from .lyrics_controller import LyricsController
 from .matrix_controller import MatrixController
 from .settings_controller import SettingsController
@@ -65,7 +66,8 @@ class AppController(QObject):
         self._settings = SettingsController(self)
         self._track = TrackController(source_factory or _default_source_factory(), self)
         self._lyrics = LyricsController(self._track, self._settings, self)
-        self._matrix = MatrixController(self._track, self)
+        self._matrix = MatrixController(self._track, self._settings, self)
+        self._eq = EqController(self._settings, self._matrix, self)
 
         self._receiver_timer = QTimer(self)
         self._receiver_timer.setInterval(RECEIVER_POLL_MS)
@@ -120,5 +122,6 @@ class AppController(QObject):
     @Slot()
     def shutdown(self) -> None:
         LOG.info("shutting down receiver supervisor")
+        self._eq.shutdown()
         self._matrix.clear()
         self._supervisor.stop()

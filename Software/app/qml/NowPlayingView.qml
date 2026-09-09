@@ -6,6 +6,7 @@ Item {
     property string previousLine: ""
     property string currentLine: ""
     property string nextLine: ""
+    property real lineProgress: 0
 
     // Idle state -- no AirPlay session open. A soft radar-style pulse
     // (rings expanding and fading from a centre dot) reads as "listening"
@@ -138,6 +139,7 @@ Item {
                 previousLine: root.previousLine
                 currentLine: root.currentLine
                 nextLine: root.nextLine
+                lineProgress: root.lineProgress
                 hasLyrics: app.lyrics.hasLyrics
             }
         }

@@ -27,6 +27,11 @@ class SettingsController(QObject):
     showLyricsChanged = Signal()
     showDetailsChanged = Signal()
     lyricsOffsetSecondsChanged = Signal()
+    eqMeterEnabledChanged = Signal()
+    progressDotEnabledChanged = Signal()
+    transitionModeChanged = Signal()
+    crossfadeSecondsChanged = Signal()
+    syncOnConnectChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -61,6 +66,21 @@ class SettingsController(QObject):
         if old["lyrics_offset_seconds"] != new["lyrics_offset_seconds"]:
             LOG.info("lyrics_offset_seconds -> %s", new["lyrics_offset_seconds"])
             self.lyricsOffsetSecondsChanged.emit()
+        if old["eq_meter_enabled"] != new["eq_meter_enabled"]:
+            LOG.info("eq_meter_enabled -> %s", new["eq_meter_enabled"])
+            self.eqMeterEnabledChanged.emit()
+        if old["progress_dot_enabled"] != new["progress_dot_enabled"]:
+            LOG.info("progress_dot_enabled -> %s", new["progress_dot_enabled"])
+            self.progressDotEnabledChanged.emit()
+        if old["transition_mode"] != new["transition_mode"]:
+            LOG.info("transition_mode -> %s", new["transition_mode"])
+            self.transitionModeChanged.emit()
+        if old["sync_on_connect"] != new["sync_on_connect"]:
+            LOG.info("sync_on_connect -> %s", new["sync_on_connect"])
+            self.syncOnConnectChanged.emit()
+        if old["crossfade_seconds"] != new["crossfade_seconds"]:
+            LOG.info("crossfade_seconds -> %s", new["crossfade_seconds"])
+            self.crossfadeSecondsChanged.emit()
 
     def _get_show_lyrics(self) -> bool:
         return self._settings["show_lyrics"]
@@ -71,6 +91,38 @@ class SettingsController(QObject):
     def _get_lyrics_offset_seconds(self) -> float:
         return self._settings["lyrics_offset_seconds"]
 
+    def _get_eq_meter_enabled(self) -> bool:
+        return self._settings["eq_meter_enabled"]
+
+    def _get_progress_dot_enabled(self) -> bool:
+        return self._settings["progress_dot_enabled"]
+
+    def _get_transition_mode(self) -> str:
+        return self._settings["transition_mode"]
+
+    def _get_sync_on_connect(self) -> bool:
+        return self._settings["sync_on_connect"]
+
+    def _get_crossfade_ms(self) -> int:
+        # Handed to QML in milliseconds, which is what every QML animation
+        # duration is expressed in -- saves each call site converting.
+        return int(round(self._settings["crossfade_seconds"] * 1000))
+
     showLyrics = Property(bool, _get_show_lyrics, notify=showLyricsChanged)
     showDetails = Property(bool, _get_show_details, notify=showDetailsChanged)
     lyricsOffsetSeconds = Property(float, _get_lyrics_offset_seconds, notify=lyricsOffsetSecondsChanged)
+    # Not read by app_qt5/qml either -- see app/settings_controller.py's
+    # matching property, which this mirrors. Only MatrixController consumes
+    # it (Software/matrix/eq_meter.py has the actual capture/render logic).
+    eqMeterEnabled = Property(bool, _get_eq_meter_enabled, notify=eqMeterEnabledChanged)
+    # Read by PlaybackBar.qml. Unlike eqMeterEnabled above, this one
+    # genuinely is a QML-side property -- it just shows/hides an element.
+    progressDotEnabled = Property(
+        bool, _get_progress_dot_enabled, notify=progressDotEnabledChanged
+    )
+    # "fade" or "crossfade" -- read by NowPlayingView/AlbumArt/Background to
+    # pick how a track change is animated. See display_settings.py.
+    transitionMode = Property(str, _get_transition_mode, notify=transitionModeChanged)
+    crossfadeMs = Property(int, _get_crossfade_ms, notify=crossfadeSecondsChanged)
+    # Read by SyncController, not by QML.
+    syncOnConnect = Property(bool, _get_sync_on_connect, notify=syncOnConnectChanged)

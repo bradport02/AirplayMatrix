@@ -66,11 +66,65 @@ CONFIG_PATH = Path.home() / ".config" / "airplaymatrix-display" / "config.json"
 # has changed.
 OFFSET_HISTORY_PATH = CONFIG_PATH.parent / "lyrics_offset_history.log"
 
+# The only accepted values for transition_mode, shared by the web UI's
+# validation and load()'s fallback below.
+TRANSITION_MODES = ("fade", "crossfade")
+
+# Bounds for crossfade_seconds. The floor is the app's own standard
+# animation length -- going below it wouldn't be a crossfade so much as a
+# cut, and the fade mode already covers "get on with it". The ceiling is
+# generous on purpose: a very slow dissolve is a legitimate look on a
+# display that sits on a shelf.
+CROSSFADE_MIN_SECONDS = 0.4
+CROSSFADE_MAX_SECONDS = 5.0
+
+
+def _clamp_crossfade(value: object) -> float:
+    try:
+        seconds = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULTS["crossfade_seconds"]  # type: ignore[return-value]
+    return max(CROSSFADE_MIN_SECONDS, min(CROSSFADE_MAX_SECONDS, seconds))
+
 DEFAULTS = {
     "show_lyrics": False,  # off by default -- Zero WH performance is unproven
     "show_details": True,  # title/artist/album text block
     "lyrics_offset_seconds": 0.0,  # AirPlay-2 buffering compensation, see above
     "connect_volume_percent": 75,  # AirPlay volume set on every new connection, see above
+    # Off by default, same reasoning as show_lyrics: an untested extra CPU/
+    # audio-capture load on the Zero WH's single core shouldn't turn on by
+    # itself. Read by MatrixController (app/ and app_qt5/) to decide whether
+    # the 64x64 panel shows album artwork (default) or Software/matrix/
+    # eq_meter.py's live band-level bars instead -- see that module's
+    # docstring for where the audio actually comes from.
+    "eq_meter_enabled": False,
+    # The round scrub handle riding the end of the progress bar. Off by
+    # default: the bar itself already shows position, and the dot is the
+    # part of it that has to be redrawn at a new x every time position
+    # updates. Kept as a toggle rather than deleted outright because it
+    # is purely a look preference, not a correctness one.
+    "progress_dot_enabled": False,
+    # How the display moves from one track to the next. "fade" takes the
+    # outgoing track out to the background and brings the new one up once
+    # its artwork has decoded; "crossfade" dissolves the old artwork and
+    # text straight into the new, never passing through an empty screen.
+    # "fade" stays the default: it is the cheaper of the two on the Zero WH
+    # (only ever one artwork decoded and composited at a time), and it is
+    # the behaviour this build shipped with.
+    # Silence the receiver at the start of a session until the metadata and
+    # lyrics have landed, then restart the track so the two begin together.
+    # See app_qt5/sync_controller.py. Off by default: it deliberately
+    # delays the first few seconds of the first song, which is a trade
+    # worth making only if you want it.
+    "sync_on_connect": False,
+    "transition_mode": "fade",
+    # Length of each stage of a crossfade, in seconds. The default matches
+    # Theme.durationSlow (0.4s), which is what every other animation in the
+    # UI uses, so leaving it alone keeps transitions consistent with the
+    # rest of the app. A track change runs two stages back to back (text
+    # out, then artwork dissolve + text back in), so the whole transition
+    # takes roughly twice this.
+    "crossfade_seconds": 0.4,
 }
 
 # Generous enough to cover any receiver's real buffer depth (AirPlay 2's is
@@ -85,6 +139,11 @@ class DisplaySettings(TypedDict):
     show_details: bool
     lyrics_offset_seconds: float
     connect_volume_percent: int
+    eq_meter_enabled: bool
+    progress_dot_enabled: bool
+    sync_on_connect: bool
+    transition_mode: str
+    crossfade_seconds: float
 
 
 def load() -> DisplaySettings:
@@ -112,6 +171,20 @@ def load() -> DisplaySettings:
         "show_details": bool(data.get("show_details", DEFAULTS["show_details"])),
         "lyrics_offset_seconds": offset,
         "connect_volume_percent": connect_volume,
+        "eq_meter_enabled": bool(data.get("eq_meter_enabled", DEFAULTS["eq_meter_enabled"])),
+        "progress_dot_enabled": bool(
+            data.get("progress_dot_enabled", DEFAULTS["progress_dot_enabled"])
+        ),
+        # Anything unrecognised falls back to the default rather than being
+        # passed through to QML, which would otherwise have to defend
+        # against it -- this file is hand-editable.
+        "sync_on_connect": bool(data.get("sync_on_connect", DEFAULTS["sync_on_connect"])),
+        "crossfade_seconds": _clamp_crossfade(data.get("crossfade_seconds")),
+        "transition_mode": (
+            data.get("transition_mode")
+            if data.get("transition_mode") in TRANSITION_MODES
+            else DEFAULTS["transition_mode"]
+        ),
     }
 
 
@@ -122,6 +195,24 @@ def save(settings: DisplaySettings) -> None:
     tmp = CONFIG_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(settings, indent=2) + "\n")
     tmp.replace(CONFIG_PATH)
+
+
+def set_crossfade_seconds(seconds: float) -> DisplaySettings:
+    """Separate from set_one() -- a clamped float, not a toggle."""
+    settings = load()
+    settings["crossfade_seconds"] = _clamp_crossfade(seconds)
+    save(settings)
+    return settings
+
+
+def set_transition_mode(mode: str) -> DisplaySettings:
+    """Separate from set_one() -- this one's an enum, not a toggle."""
+    if mode not in TRANSITION_MODES:
+        raise ValueError(f"unknown transition mode: {mode!r}")
+    settings = load()
+    settings["transition_mode"] = mode
+    save(settings)
+    return settings
 
 
 def set_one(key: str, value: bool) -> DisplaySettings:

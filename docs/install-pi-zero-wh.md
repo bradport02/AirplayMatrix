@@ -170,6 +170,20 @@ connect to display`) rather than falling back to something visible.
 Building itself took about 20 minutes on real Zero WH hardware -- CPU-bound
 on the single core, not memory-bound once the swapfile above is in place.
 
+**Known limitation, not fixable from this project's own code:** shairport-
+sync's D-Bus/MPRIS/MQTT "RemoteControl" interface -- what step 3's CEC
+remote passthrough calls to turn a TV-remote button press into Play/Pause/
+Next/Previous -- only forwards to **classic AirPlay 1** sessions. AirPlay 2
+has no equivalent upstream support yet (confirmed against shairport-sync's
+own docs/source; it isn't a config flag or a version you're missing). TV
+power and connect-volume both keep working either way (neither depends on
+DACP), but the remote's transport buttons go dead the moment a device
+connects over AirPlay 2. There's no code-level fix available on this side
+of that; the only way to get transport controls back today is
+`--classic-airplay` (or reverting an existing install to the
+`v1-classic-airplay` git tag), trading away AirPlay 2's main benefit --
+other apps' incidental audio no longer being able to interrupt the stream.
+
 ## 3. HDMI-CEC
 
 Identical to the full build -- the Zero only has one HDMI port, so
@@ -290,6 +304,56 @@ Check it's running and pushing frames:
 sudo systemctl status airplaymatrix-matrix
 sudo journalctl -u airplaymatrix-matrix -f
 ```
+
+## 6. EQ meter (optional)
+
+The web UI's `/matrix` page can switch the LED panel from album artwork to
+a live bar-graph equaliser, driven by the actual AirPlay audio. This needs
+one extra, one-time root setup step that neither Plan A nor Plan B above
+does for you automatically (unlike the CEC/web-UI steps, it isn't folded
+into `setup.sh` -- it changes shairport-sync's own audio-output routing,
+which is worth doing deliberately rather than as a side effect of a fresh
+install):
+
+```bash
+scp Software/matrix/setup-eq-meter.sh <device>:~
+ssh -t <device> 'sudo bash ~/setup-eq-meter.sh'
+```
+
+What it does (see the script's own header comment for the full detail): a
+kernel ALSA loopback (`snd-aloop`) plus an ALSA `route`+`multi` device that
+fans shairport-sync's output out to both the real hardware output (used
+exactly as before -- same device, same format negotiation) and the
+loopback's playback side. `Software/matrix/eq_meter.py` reads only the
+*other* half of that loopback via a plain `arecord` subprocess -- it never
+touches the real audio path, so nothing in this feature can break actual
+playback, only the meter itself. FFT band levels are computed with numpy
+(already a system package, no extra install), which is why this is a
+software-only step: no filter-bank/DSP chip in the loop, and cheap enough
+on the Zero WH's single core that it's the frame encode/serial-write for
+each bar frame that dominates, not the FFT.
+
+Verify the tap before flipping the web UI toggle: with something actually
+playing over AirPlay,
+
+```bash
+arecord -D hw:Loopback,1,0 -f S16_LE -r 44100 -c 2 -d 3 /tmp/eq-test.wav
+```
+
+should capture 3 seconds of the *actual* audio (play it back, or just check
+the file isn't near-silent) -- if it's silent, the loopback isn't wired up
+(re-run the setup script, or check `cat /proc/asound/cards` shows a
+`Loopback` card). Then enable it from `/matrix` in the web UI; it takes
+effect live, same as the other display-settings toggles, no restart of the
+kiosk app needed.
+
+`sudo bash ~/setup-eq-meter.sh --revert` puts shairport-sync back on its
+original output device if you want the extra ALSA plugin layer gone
+entirely (leaves `snd-aloop` loaded and the `eqtap` ALSA stanza in place,
+since neither does anything while nothing points at them).
+
+Off by default, same reasoning as the lyrics toggle above: this is untested
+extra CPU load on a single ARM11 core, and shouldn't turn itself on.
 
 ## Verifying
 

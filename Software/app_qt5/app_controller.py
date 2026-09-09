@@ -12,6 +12,7 @@ Software/display_settings.py's docstring for why).
 from __future__ import annotations
 
 import logging
+import subprocess
 import platform
 from typing import Callable
 
@@ -21,12 +22,16 @@ import airplay_name
 from metadata import MetadataSource, PipeSource, TcpSource
 from receiver import NullSupervisor, ReceiverSupervisor, WslProcessSupervisor
 
+from .eq_controller import EqController
 from .lyrics_controller import LyricsController
 from .matrix_controller import MatrixController
 from .settings_controller import SettingsController
+from .sync_controller import SyncController
 from .track_controller import TrackController
 
 LOG = logging.getLogger(__name__)
+
+TV_POWER_SCRIPT = "/usr/local/bin/airplay-tv-power.sh"
 
 RECEIVER_POLL_MS = 1000
 
@@ -67,7 +72,24 @@ class AppController(QObject):
         self._settings = SettingsController(self)
         self._track = TrackController(source_factory or _default_source_factory(), self)
         self._lyrics = LyricsController(self._track, self._settings, self)
-        self._matrix = MatrixController(self._track, self)
+        self._matrix = MatrixController(self._track, self._settings, self)
+        self._eq = EqController(self._settings, self._matrix, self)
+        # Owns nothing the rest of the app reads -- it just watches for a
+        # session opening and, if enabled, mutes/restarts to get the lyrics
+        # in step. Kept as its own object so that behaviour can't tangle
+        # with the track-transition state machine.
+        self._sync = SyncController(self._track, self._lyrics, self._settings, self)
+
+        # Wake the TV the instant a device connects, rather than waiting for
+        # it to start playing. shairport-sync's own hooks can't do this --
+        # sessioncontrol only offers play/active-state events, no
+        # connection-level one -- but the metadata stream carries "conn"
+        # and "snam" about half a second before playback begins, and
+        # TrackController already surfaces that as clientConnected. So the
+        # wake is driven from here instead. Only ever on the rising edge:
+        # the script is idempotent, but there's no reason to keep poking a
+        # TV that's already awake.
+        self._track.clientConnectedChanged.connect(self._on_client_connected)
 
         self._receiver_timer = QTimer(self)
         self._receiver_timer.setInterval(RECEIVER_POLL_MS)
@@ -76,6 +98,22 @@ class AppController(QObject):
         self._supervisor.start()
         self._poll_receiver()
         self._receiver_timer.start()
+
+    def _on_client_connected(self) -> None:
+        if not self._track.clientConnected:
+            return
+        try:
+            # Fire-and-forget: CEC can be slow to answer and the GUI thread
+            # must not block on a TV. Failures are the script's to log --
+            # a receiver with no CEC-capable display attached is a perfectly
+            # normal setup, not an error worth surfacing here.
+            subprocess.Popen(
+                [TV_POWER_SCRIPT, "wake"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            LOG.debug("could not run %s wake: %s", TV_POWER_SCRIPT, exc)
 
     def _poll_receiver(self) -> None:
         running = self._supervisor.is_running
@@ -122,5 +160,6 @@ class AppController(QObject):
     @Slot()
     def shutdown(self) -> None:
         LOG.info("shutting down receiver supervisor")
+        self._eq.shutdown()
         self._matrix.clear()
         self._supervisor.stop()

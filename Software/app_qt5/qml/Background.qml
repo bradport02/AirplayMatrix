@@ -31,41 +31,163 @@ import QtGraphicalEffects 1.15
 Item {
     id: root
 
+    // Set by Main.qml from the same showTrack value the now-playing panel
+    // uses. The blurred backdrop is as much "the current track" as the
+    // artwork tile is, so it has to fade with it -- previously it swapped
+    // the instant the new cover decoded, which meant the panel faded
+    // politely while the entire background cut to the next song behind it.
+    property bool showArtwork: false
+
+    // How much smaller than the screen the blur is computed at. 6 puts a
+    // 1080p backdrop through a 320x180 blur.
+    readonly property int blurDownscale: 6
+
     Rectangle {
         anchors.fill: parent
         color: Theme.colorIdleBackground
     }
 
-    Image {
-        id: artImage
-        anchors.fill: parent
-        source: app.track.artworkSource
-        fillMode: Image.PreserveAspectCrop
-        asynchronous: true
-        cache: false
-        visible: false
-        opacity: 0
-
-        onSourceChanged: opacity = 0
-        onStatusChanged: if (status === Image.Ready) opacity = 1
-
-        Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.OutCubic } }
+    // Backdrop artwork, kept as two alternating layers so one cover can
+    // dissolve into the next (transition_mode "crossfade") instead of the
+    // background cutting while the panel in front of it fades.
+    //
+    // There is exactly ONE FastBlur, and the two covers cross-fade *inside*
+    // its source item -- so the backdrop dissolves with the artwork while
+    // still costing a single blur pass. An earlier version gave each cover
+    // its own full-screen blur and cross-faded those: two 1920x1080 blur
+    // passes at once made the whole device lag and starved shairport-sync
+    // badly enough to drop the audio, so that route is closed on this
+    // hardware.
+    //
+    // Two images are kept regardless, so the swap happens *after* the new
+    // one has decoded -- reassigning a single Image's source would blank
+    // the backdrop for the length of the decode.
+    //
+    // Both decode at 320px: this is only ever seen through a radius-64
+    // blur, which destroys far more detail than the downscale does.
+    QtObject {
+        id: backdrop
+        property bool frontIsA: true
+        // Matches the artwork tile, so backdrop and cover dissolve together.
+        readonly property int duration:
+            app.settings.transitionMode === "crossfade" ? app.settings.crossfadeMs : 0
     }
 
-    FastBlur {
-        anchors.fill: parent
-        source: artImage
-        visible: app.track.artworkSource !== ""
-        radius: 64 * Theme.uiScale
+    // Same effective source as AlbumArt, so the backdrop turns over in the
+    // same frame as the cover rather than a beat behind it.
+    readonly property string effectiveSource:
+        (app.track.readyToTransition && app.track.pendingArtworkSource)
+        ? app.track.pendingArtworkSource
+        : app.track.artworkSource
+
+    onEffectiveSourceChanged: _loadBackdrop()
+
+    function _loadBackdrop() {
+        var src = root.effectiveSource
+        var back = backdrop.frontIsA ? imageB : imageA
+        var front = backdrop.frontIsA ? imageA : imageB
+        if (src === front.source) return
+        if (src === "") {
+            // Nothing to decode, so no Ready is coming -- swap immediately.
+            back.source = ""
+            backdrop.frontIsA = !backdrop.frontIsA
+            return
+        }
+        back.source = src
     }
 
-    // Darkens the blurred artwork so foreground text stays legible, without
-    // washing out its colour the way a heavier scrim would.
-    Rectangle {
+    function _backdropReady(image) {
+        var back = backdrop.frontIsA ? imageB : imageA
+        if (image === back && image.status === Image.Ready) {
+            backdrop.frontIsA = !backdrop.frontIsA
+        }
+    }
+
+    Component.onCompleted: _loadBackdrop()
+
+    // Both layers live inside one container, and the container is what the
+    // blur below captures -- so the two covers cross-fade *before* being
+    // blurred, and there is still only a single blur pass. The alternative
+    // (a blur each, cross-faded) is what previously ran two full-screen
+    // blurs at once and starved the audio thread badly enough to drop
+    // sound, so it is not an option on this hardware.
+    // The blurred backdrop and its legibility scrim, faded as one piece so
+    // the darkening doesn't linger over a background that's already gone.
+    Item {
+        id: artworkLayer
         anchors.fill: parent
-        color: "black"
-        opacity: app.track.artworkSource !== "" ? 0.35 : 0
-        Behavior on opacity { NumberAnimation { duration: Theme.durationSlow } }
+        opacity: root.showArtwork ? 1 : 0
+        visible: opacity > 0
+
+        Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.InOutQuad } }
+
+        // The blur runs on a deliberately tiny stage which is then scaled
+        // up to fill the screen, rather than blurring at 1920x1080
+        // directly. Blur cost scales with area, so this is roughly
+        // BLUR_DOWNSCALE^2 -- about 36x -- cheaper.
+        //
+        // That matters far more than it used to. While the two covers are
+        // crossfading, the blur's source item is *changing every frame*, so
+        // the blur cannot be computed once and reused -- it re-renders for
+        // the entire length of the transition. At full resolution that is a
+        // full-screen blur per frame on a VideoCore IV, which is what made
+        // the crossfade choppy. Upscaling costs nothing by comparison, and
+        // is invisible here because the thing being magnified is already a
+        // heavy blur.
+        Item {
+            id: blurStage
+            width: Math.max(1, Math.round(parent.width / root.blurDownscale))
+            height: Math.max(1, Math.round(parent.height / root.blurDownscale))
+            transformOrigin: Item.TopLeft
+            scale: root.blurDownscale
+
+            Item {
+                id: backdropSource
+                anchors.fill: parent
+                visible: false
+
+                Image {
+                    id: imageA
+                    anchors.fill: parent
+                    sourceSize.width: 320
+                    sourceSize.height: 320
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    cache: false
+                    opacity: backdrop.frontIsA ? 1 : 0
+                    onStatusChanged: root._backdropReady(imageA)
+                    Behavior on opacity { NumberAnimation { duration: backdrop.duration; easing.type: Easing.InOutQuad } }
+                }
+
+                Image {
+                    id: imageB
+                    anchors.fill: parent
+                    sourceSize.width: 320
+                    sourceSize.height: 320
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    cache: false
+                    opacity: backdrop.frontIsA ? 0 : 1
+                    onStatusChanged: root._backdropReady(imageB)
+                    Behavior on opacity { NumberAnimation { duration: backdrop.duration; easing.type: Easing.InOutQuad } }
+                }
+            }
+            FastBlur {
+                anchors.fill: parent
+                source: backdropSource
+                // Radius is in stage pixels, so it has to come down by the
+                // same factor to keep the on-screen blur the same size.
+                radius: 64 * Theme.uiScale / root.blurDownscale
+            }
+        }
+
+        // Darkens the blurred artwork so foreground text stays legible,
+        // without washing out its colour the way a heavier scrim would.
+        Rectangle {
+            anchors.fill: parent
+            color: "black"
+            opacity: 0.35
+        }
     }
 
     // Vignette so the top/bottom bars read clearly over artwork -- only

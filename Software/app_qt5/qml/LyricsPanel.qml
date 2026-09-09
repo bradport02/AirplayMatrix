@@ -37,20 +37,60 @@ import QtQuick 2.15
 // fetching in the first place. It's the CPU-heaviest thing in this app
 // (per-frame text reflow/scroll), which is exactly why the Zero WH port
 // makes it optional in the first place.
+//
+// Colour tells you where you are in the song, borrowed from Apple Music's
+// lyrics: lines still to come are dimmed, the line playing now and the ones
+// already sung are bright. The Pi 5 build (app/qml/LyricsPanel.qml) goes
+// further and wipes the active line word-by-word; this build deliberately
+// does not -- see the Text delegate below for why that costs more than this
+// device can spare.
 Item {
     id: root
     property string previousLine: ""
     property string currentLine: ""
     property string nextLine: ""
     property bool hasLyrics: false
+    // True once playback reaches the end-of-song credits (see
+    // LyricsController.creditsActive). Credits are a block to be read at a
+    // glance, not lyrics sung one line at a time, so while this is set the
+    // whole window is shown at the small size, in full white, with nothing
+    // dimmed and nothing growing -- they still scroll up into the active
+    // position exactly like lyric lines do.
+    property bool creditsMode: false
+    // Whether a lookup has actually come back for the current track.
+    // See LyricsController.searched -- without this the panel says
+    // "No lyrics found" during every fetch, then replaces it with the
+    // lyrics a moment later.
+    property bool searched: false
 
     readonly property real smallSize: 22 * Theme.uiScale
     readonly property real bigSize: 34 * Theme.uiScale
     readonly property real lineGap: Theme.spacingLg
     readonly property int animDuration: Theme.durationSlow
 
+    // Already-sung / not-yet-sung colour pair -- reuses the same two tokens
+    // Theme.qml already defines for primary/secondary text (and their
+    // over-light-artwork variants, see TrackController.textIsDark), rather
+    // than inventing a third pair just for this.
+    readonly property color sungColor: app.track.textIsDark ? Theme.colorTextPrimaryOnLight : Theme.colorTextPrimary
+    readonly property color pendingColor: app.track.textIsDark ? Theme.colorTextSecondaryOnLight : Theme.colorTextSecondary
+
+    // Role 1 (already sung) sits at full opacity alongside role 2 (playing
+    // now): with colour carrying the sung/pending distinction, fading the
+    // previous line too would say "this is receding" at the same time its
+    // white colour says "this has been played" -- two different signals for
+    // one state. Only role 3 (still to come) is dimmed, which reinforces
+    // pendingColor rather than fighting it. Role 2 is still distinguished
+    // from role 1, just by size rather than by fade.
+    // The active line is the only one that grows, and only for lyrics --
+    // credits stay at the small size in every role.
+    function sizeForRole(role) {
+        return (role === 2 && !creditsMode) ? bigSize : smallSize
+    }
+
     function targetOpacity(role) {
-        return role === 2 ? 1.0 : (role === 1 || role === 3 ? 0.5 : 0.0)
+        if (creditsMode) return (role >= 1 && role <= 3) ? 1.0 : 0.0
+        return (role === 1 || role === 2) ? 1.0 : (role === 3 ? 0.5 : 0.0)
     }
 
     function holderWithRole(r) {
@@ -100,6 +140,14 @@ Item {
     }
 
     onCurrentLineChanged: rotate()
+
+    // Entering or leaving credits changes every holder's target font size,
+    // and the layout is computed from those sizes rather than continuously
+    // tracked -- so it has to be recomputed here. In practice a rotate()
+    // usually happens on the same tick (the "Credits:" line becoming
+    // active), which does this anyway; this covers the case where it
+    // doesn't, rather than leaving the lines spaced for the old sizes.
+    onCreditsModeChanged: resnap()
 
     // rotate() only ever rewrites the text of the one holder it recycles;
     // the other three just change role and keep whatever they were last
@@ -152,9 +200,9 @@ Item {
         // the scale that makes it *still look* like its old size, then ease
         // back to 1.0 once the role (and so target size) has changed.
         items.forEach(function (h) {
-            var oldSize = h.role === 2 ? root.bigSize : root.smallSize
+            var oldSize = root.sizeForRole(h.role)
             h.role = h.role - 1
-            var newSize = h.role === 2 ? root.bigSize : root.smallSize
+            var newSize = root.sizeForRole(h.role)
             var wasAnimating = h.animatingEnabled
             h.animatingEnabled = false
             h.scale = oldSize / newSize
@@ -208,17 +256,32 @@ Item {
                 // per frame.
                 Behavior on scale { enabled: holder.animatingEnabled; NumberAnimation { duration: root.animDuration; easing.type: Easing.OutCubic } }
 
+                // Whole-line solid-colour renderer -- one Text per line, for
+                // every role. Colour is the only thing that distinguishes
+                // where we are in the song: role 1 (already sung) and role 2
+                // (the line playing right now) are the bright "sung" colour;
+                // role 3 (the line still to come, and 0/4 which are
+                // invisible anyway) is the dimmed "pending" colour.
+                //
+                // Zero WH build only: this deliberately does NOT do the
+                // word-by-word "karaoke" wipe that app/qml/LyricsPanel.qml
+                // (Pi 5 build) does -- see that file for it. The wipe means
+                // a per-word Item + clip whose width is re-evaluated on
+                // every lyrics poll for the whole time a line is playing,
+                // and on this single-core ARM1176 with no GPU compositing
+                // that constant reflow is exactly the kind of always-on
+                // render work this device cannot spare. The colour split
+                // above gives the same at-a-glance "here's where we are"
+                // read for one Text per line and no per-frame work.
                 Text {
                     id: visibleText
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    // Swaps to dark ink over light album art -- see
-                    // TrackController.textIsDark / encoder.legible_text_is_dark.
-                    color: app.track.textIsDark ? Theme.colorTextPrimaryOnLight : Theme.colorTextPrimary
+                    color: (root.creditsMode || holder.role <= 2) ? root.sungColor : root.pendingColor
                     font.family: Theme.fontFamily
                     font.weight: Font.DemiBold
                     opacity: root.targetOpacity(holder.role)
-                    font.pixelSize: holder.role === 2 ? root.bigSize : root.smallSize
+                    font.pixelSize: root.sizeForRole(holder.role)
 
                     Behavior on opacity { enabled: holder.animatingEnabled; NumberAnimation { duration: root.animDuration; easing.type: Easing.OutCubic } }
                 }
@@ -232,7 +295,7 @@ Item {
                     wrapMode: Text.WordWrap
                     font.family: Theme.fontFamily
                     font.weight: Font.DemiBold
-                    font.pixelSize: holder.role === 2 ? root.bigSize : root.smallSize
+                    font.pixelSize: root.sizeForRole(holder.role)
                     text: visibleText.text
                     visible: false
                 }
@@ -253,7 +316,7 @@ Item {
 
     Text {
         anchors.centerIn: parent
-        visible: !root.hasLyrics
+        visible: !root.hasLyrics && root.searched
         text: "No lyrics found"
         color: app.track.textIsDark ? Theme.colorTextSecondaryOnLight : Theme.colorTextSecondary
         font.family: Theme.fontFamily

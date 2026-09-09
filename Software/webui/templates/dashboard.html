@@ -92,6 +92,82 @@
     </form>
   </div>
 
+  <h3 class="subhead">{{ icon('mic') }} Lyric sync on connect</h3>
+  <p class="muted">
+    AirPlay starts the audio before it sends any metadata, so the first song of a session can be
+    several seconds in before its lyrics are even known -- and they can stay out of step for the
+    rest of that track. With this on, the receiver stays silent when you first connect until the
+    metadata and lyrics have arrived, then restarts the track and unmutes, so the song and its
+    lyrics begin together. Only the first track of a session is affected; later track changes are
+    never interrupted. Costs a few seconds of silence at the start.
+    Currently <strong>{{ 'on' if display.sync_on_connect else 'off' }}</strong>. Off by default.
+  </p>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('set_display_setting', key='sync_on_connect') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state" value="on">
+      <button type="submit" class="{{ 'primary' if display.sync_on_connect else '' }}">On</button>
+    </form>
+    <form method="post" action="{{ url_for('set_display_setting', key='sync_on_connect') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state" value="off">
+      <button type="submit" class="{{ 'danger' if not display.sync_on_connect else '' }}">Off</button>
+    </form>
+  </div>
+
+  <h3 class="subhead">{{ icon('refresh') }} Track transition</h3>
+  <p class="muted">
+    How the display moves from one track to the next. <strong>Fade</strong> takes the outgoing track
+    out to the background and brings the new one up once its artwork has loaded.
+    <strong>Cross-fade</strong> dissolves the old artwork and title straight into the new, never
+    passing through an empty screen -- it costs a little more, since both covers are decoded and
+    composited at once for the length of the transition.
+    Currently <strong>{{ 'cross-fade' if display.transition_mode == 'crossfade' else 'fade' }}</strong>.
+  </p>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('set_transition_mode') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="mode" value="fade">
+      <button type="submit" class="{{ 'primary' if display.transition_mode != 'crossfade' else '' }}">Fade</button>
+    </form>
+    <form method="post" action="{{ url_for('set_transition_mode') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="mode" value="crossfade">
+      <button type="submit" class="{{ 'primary' if display.transition_mode == 'crossfade' else '' }}">Cross-fade</button>
+    </form>
+  </div>
+
+  <h3 class="subhead">{{ icon('sliders') }} Cross-fade time</h3>
+  <p class="muted">
+    How long each stage of a cross-fade takes. A track change runs two stages back to back (the
+    title and lyrics fade out, then the artwork dissolves as they fade back in), so the whole
+    transition takes roughly twice this. Only applies in cross-fade mode.
+    Currently <strong>{{ '%.1f'|format(display.crossfade_seconds) }}s</strong>.
+  </p>
+  <form method="post" action="{{ url_for('set_crossfade_seconds') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="range" name="seconds" min="0.4" max="5" step="0.1"
+           value="{{ display.crossfade_seconds }}"
+           oninput="document.getElementById('crossfade-readout').textContent = parseFloat(this.value).toFixed(1) + 's'">
+    <span id="crossfade-readout" class="muted">{{ '%.1f'|format(display.crossfade_seconds) }}s</span>
+    <button type="submit" class="primary">Save</button>
+  </form>
+
+  <h3 class="subhead">{{ icon('text') }} Progress bar dot</h3>
+  <p class="muted">The round handle at the end of the progress bar. Currently <strong>{{ 'on' if display.progress_dot_enabled else 'off' }}</strong>. Off by default -- the bar alone already shows position.</p>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('set_display_setting', key='progress_dot_enabled') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state" value="on">
+      <button type="submit" class="{{ 'primary' if display.progress_dot_enabled else '' }}">On</button>
+    </form>
+    <form method="post" action="{{ url_for('set_display_setting', key='progress_dot_enabled') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state" value="off">
+      <button type="submit" class="{{ 'danger' if not display.progress_dot_enabled else '' }}">Off</button>
+    </form>
+  </div>
+
   <h3 class="subhead">{{ icon('text') }} Song details (title / artist / album)</h3>
   <p class="muted">Currently <strong>{{ 'on' if display.show_details else 'off' }}</strong>. On by default.</p>
   <div class="button-row">
@@ -170,6 +246,10 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit">{{ icon('refresh') }} Restart display app</button>
       </form>
+      <form method="post" action="{{ url_for('restart_webui') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">{{ icon('refresh') }} Restart web UI</button>
+      </form>
       <form method="post" action="{{ url_for('reboot') }}"
             onsubmit="return confirm('Reboot the AirplayMatrix Pi now?');">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -193,13 +273,13 @@
   <details>
     <summary>Restore default settings</summary>
     <p class="muted warn">
-      Resets the P3 matrix display (power, mode, brightness, colour), the desk-display lyrics/song-details
-      toggles, and TV auto-off timeout back to their defaults, and generates a brand-new random admin
-      password -- shown once, right after, on the login page. You'll be logged out immediately. Wi-Fi
-      and the AirPlay device name are left untouched.
+      Resets the P3 matrix display (power, mode, brightness, colour), the EQ meter toggle, the
+      desk-display lyrics/song-details toggles, and TV auto-off timeout back to their defaults, and
+      generates a brand-new random admin password -- shown once, right after, on the login page.
+      You'll be logged out immediately. Wi-Fi and the AirPlay device name are left untouched.
     </p>
     <form method="post" action="{{ url_for('restore_defaults') }}"
-          onsubmit="return confirm('Restore default settings now?\n\nThis resets the matrix display, desk-display toggles, and TV auto-off timeout, generates a brand-new admin password, and logs you out immediately. Wi-Fi and the AirPlay device name are left alone.\n\nContinue?');">
+          onsubmit="return confirm('Restore default settings now?\n\nThis resets the matrix display, EQ meter toggle, desk-display toggles, and TV auto-off timeout, generates a brand-new admin password, and logs you out immediately. Wi-Fi and the AirPlay device name are left alone.\n\nContinue?');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="danger">{{ icon('refresh') }} Restore default settings</button>
     </form>

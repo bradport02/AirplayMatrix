@@ -810,3 +810,15 @@ else
   log "Headless: the matrix panel is the only output, check it's receiving frames with:"
   log "  sudo journalctl -u airplaymatrix-matrix -f"
 fi
+
+# Optional extras that deliberately aren't run automatically -- both change
+# system-level state (audio routing / a root-owned helper) and neither is
+# needed for a working receiver, so they stay opt-in rather than being
+# folded into a script people run on a whim.
+log ""
+log "Optional, one-time, run by hand if you want them:"
+log "  LED matrix EQ meter (ALSA loopback tap on the audio output):"
+log "    sudo bash $SOFTWARE_DIR/matrix/setup-eq-meter.sh"
+log "    (then enable it from the web UI's Matrix page -> Display mode -> EQ meter)"
+log "  Re-install the web UI's root helper after pulling new code:"
+log "    sudo bash $SOFTWARE_DIR/webui/install-privileged.sh"
