@@ -9,6 +9,29 @@
 </header>
 
 <section class="card">
+  <h2>{{ icon('volume') }} Now playing</h2>
+  {% if not np or np.stale %}
+  <p class="muted">
+    The display app isn't reporting — it may not be running. Check the
+    <a href="{{ url_for('diagnostics') }}">Diagnostics</a> page.
+  </p>
+  {% elif np.session_active and np.content_ready %}
+  <div class="now-playing">
+    {% if np.artwork_b64 %}<img class="np-art" src="data:image/jpeg;base64,{{ np.artwork_b64 }}" alt="">{% endif %}
+    <div>
+      <div class="np-title">{{ np.title or '—' }}</div>
+      <div class="muted">{{ [np.artist, np.album] | select | join(' — ') }}</div>
+      <div class="muted">{{ 'Playing' if np.playing else 'Paused' }}{% if np.client_name %} · from {{ np.client_name }}{% endif %}</div>
+    </div>
+  </div>
+  {% elif np.session_active %}
+  <p class="muted">Connection received{% if np.client_name %} from <strong>{{ np.client_name }}</strong>{% endif %} — waiting for track details.</p>
+  {% elif np.client_connected %}
+  <p class="muted"><strong>{{ np.client_name or 'A device' }}</strong> is connected but not playing.</p>
+  {% else %}
+  <p class="muted">Nothing playing. The receiver is idle and discoverable.</p>
+  {% endif %}
+
   <h2>{{ icon('chip') }} Status</h2>
   <dl class="status-grid">
     <dt>Hostname</dt><dd>{{ hostname }}</dd>
@@ -202,6 +225,33 @@
 </section>
 
 <section class="card">
+  <h2>{{ icon('chip') }} Timezone</h2>
+  <p class="muted">
+    The desk display shows a clock, so a wrong timezone is visible on the wall.
+    Currently <strong>{{ timezone or 'unknown' }}</strong>. Use a standard name such as
+    <code>Europe/London</code>.
+  </p>
+  <form method="post" action="{{ url_for('set_timezone') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="zone" value="{{ timezone }}" placeholder="Europe/London">
+    <button type="submit" class="primary">Save</button>
+  </form>
+
+  <h2>{{ icon('refresh') }} Settings backup</h2>
+  <p class="muted">
+    Downloads the display settings on this page as JSON. Deliberately not this app's own config —
+    that holds the admin password hash and session secret, which have no business in a backup file.
+  </p>
+  <div class="button-row">
+    <a class="button" href="{{ url_for('export_settings') }}">{{ icon('text') }} Download settings</a>
+  </div>
+  <form method="post" action="{{ url_for('import_settings') }}" enctype="multipart/form-data"
+        onsubmit="return confirm('Restore settings from this file?\n\nCurrent display settings will be overwritten.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="file" name="settings" accept="application/json,.json">
+    <button type="submit">Restore</button>
+  </form>
+
   <h2>Advanced</h2>
   <details>
     <summary>Change admin password</summary>

@@ -70,6 +70,11 @@ OFFSET_HISTORY_PATH = CONFIG_PATH.parent / "lyrics_offset_history.log"
 # validation and load()'s fallback below.
 TRANSITION_MODES = ("fade", "crossfade")
 
+# The only log levels the web UI offers. Deliberately not the full logging
+# module set: anything above INFO would hide the session/track lines this
+# project's own troubleshooting depends on.
+LOG_LEVELS = ("INFO", "DEBUG")
+
 # Bounds for crossfade_seconds. The floor is the app's own standard
 # animation length -- going below it wouldn't be a crossfade so much as a
 # cut, and the fade mode already covers "get on with it". The ceiling is
@@ -117,6 +122,12 @@ DEFAULTS = {
     # delays the first few seconds of the first song, which is a trade
     # worth making only if you want it.
     "sync_on_connect": False,
+    # Kiosk app log verbosity, settable from the web UI's Diagnostics page.
+    # DEBUG turns on per-metadata-item and per-lyric-line tracing, which is
+    # what makes a misbehaving track diagnosable without an SSH session --
+    # and is far too noisy to leave on. Applied at app start, so it needs a
+    # "Restart display app" to take effect.
+    "log_level": "INFO",
     "transition_mode": "fade",
     # Length of each stage of a crossfade, in seconds. The default matches
     # Theme.durationSlow (0.4s), which is what every other animation in the
@@ -142,6 +153,7 @@ class DisplaySettings(TypedDict):
     eq_meter_enabled: bool
     progress_dot_enabled: bool
     sync_on_connect: bool
+    log_level: str
     transition_mode: str
     crossfade_seconds: float
 
@@ -179,6 +191,11 @@ def load() -> DisplaySettings:
         # passed through to QML, which would otherwise have to defend
         # against it -- this file is hand-editable.
         "sync_on_connect": bool(data.get("sync_on_connect", DEFAULTS["sync_on_connect"])),
+        "log_level": (
+            data.get("log_level")
+            if data.get("log_level") in LOG_LEVELS
+            else DEFAULTS["log_level"]
+        ),
         "crossfade_seconds": _clamp_crossfade(data.get("crossfade_seconds")),
         "transition_mode": (
             data.get("transition_mode")
@@ -201,6 +218,15 @@ def set_crossfade_seconds(seconds: float) -> DisplaySettings:
     """Separate from set_one() -- a clamped float, not a toggle."""
     settings = load()
     settings["crossfade_seconds"] = _clamp_crossfade(seconds)
+    save(settings)
+    return settings
+
+
+def set_log_level(level: str) -> DisplaySettings:
+    if level not in LOG_LEVELS:
+        raise ValueError(f"unknown log level: {level!r}")
+    settings = load()
+    settings["log_level"] = level
     save(settings)
     return settings
 

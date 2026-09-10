@@ -525,7 +525,16 @@ else
   # than failing to start at all and leaving a black screen.
   KIOSK_QT_ENV='if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${WAYLAND_DISPLAY:-wayland-0}" ]; then
   export QT_QPA_PLATFORM=wayland
-fi'
+fi
+
+# Keep the app'"'"'s own output where the web UI can show it. The autostart
+# launches this script with nowhere for stdout to go, so without this the
+# only record of what the display did is lost -- which is precisely what you
+# need when it misbehaves. Truncated per launch so it cannot grow without
+# bound on a device that may run for weeks.
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/airplaymatrix"
+mkdir -p "$STATE_DIR"
+exec > >(tee "$STATE_DIR/kiosk.log") 2>&1'
 fi
 
 # ---------------------------------------------------------------------------

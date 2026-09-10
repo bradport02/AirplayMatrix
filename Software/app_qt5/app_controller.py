@@ -26,6 +26,7 @@ from .eq_controller import EqController
 from .lyrics_controller import LyricsController
 from .matrix_controller import MatrixController
 from .settings_controller import SettingsController
+from .status_writer import StatusWriter
 from .sync_controller import SyncController
 from .track_controller import TrackController
 
@@ -79,6 +80,9 @@ class AppController(QObject):
         # in step. Kept as its own object so that behaviour can't tangle
         # with the track-transition state machine.
         self._sync = SyncController(self._track, self._lyrics, self._settings, self)
+        # Publishes what's on screen for the web UI, which has no other way
+        # to know -- the metadata FIFO has a single reader and it's us.
+        self._status = StatusWriter(self._track, self)
 
         # Wake the TV the instant a device connects, rather than waiting for
         # it to start playing. shairport-sync's own hooks can't do this --

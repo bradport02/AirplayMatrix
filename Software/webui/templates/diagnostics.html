@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics — AirplayMatrix{% endblock %}
+{% block content %}
+{% from "_icons.html" import icon %}
+
+<header class="page-head">
+  <h1>{{ icon('chip') }} Diagnostics</h1>
+  <p>Logs, version, and updates — everything needed to work out what the display is doing without opening a terminal.</p>
+</header>
+
+<section class="card">
+  <h2>{{ icon('refresh') }} Version</h2>
+  {% if version.commit %}
+  <p class="muted">
+    Running <strong>{{ version.commit }}</strong> on <strong>{{ version.branch }}</strong>
+    ({{ version.date }}) — {{ version.subject }}
+    {% if version.dirty %}<br><strong class="warn">Local changes present:</strong> an update can't fast-forward until they're dealt with.{% endif %}
+  </p>
+  {% else %}
+  <p class="muted">Not a git checkout, or git isn't available — updates from here won't work.</p>
+  {% endif %}
+  <div class="button-row">
+    <form method="post" action="{{ url_for('update_from_git') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="primary">{{ icon('refresh') }} Update from GitHub</button>
+    </form>
+    <form method="post" action="{{ url_for('restart_display') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">{{ icon('refresh') }} Restart display app</button>
+    </form>
+    <form method="post" action="{{ url_for('install_privileged') }}"
+          onsubmit="return confirm('Reinstall the root helper from the current checkout?\n\nDo this after an update that changed privileged commands.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">{{ icon('lock') }} Reinstall root helper</button>
+    </form>
+  </div>
+  <p class="muted">
+    An update only changes the files on disk. The display app keeps running the old code until it's
+    restarted, and the root helper lives outside the checkout on purpose (so writing the repo can't
+    change what runs as root) — reinstall it only if an update mentions privileged commands.
+  </p>
+</section>
+
+<section class="card">
+  <h2>{{ icon('text') }} Log level</h2>
+  <p class="muted">
+    <strong>DEBUG</strong> traces every metadata item and every lyric line the display selects, which
+    is what makes a misbehaving track diagnosable from here. It's far too noisy to leave on.
+    Currently <strong>{{ display.log_level }}</strong>. Takes effect on the next display-app restart.
+  </p>
+  <div class="button-row">
+    {% for level in levels %}
+    <form method="post" action="{{ url_for('set_log_level') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="level" value="{{ level }}">
+      <button type="submit" class="{{ 'primary' if display.log_level == level else '' }}">{{ level }}</button>
+    </form>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>{{ icon('grid') }} Display app</h2>
+  <p class="muted">Last 400 lines of <code>{{ kiosk_log_path }}</code>, newest at the bottom.</p>
+  <pre class="logbox" id="kiosk-log">{{ kiosk_log or "(nothing logged yet — the app writes this on launch)" }}</pre>
+</section>
+
+<section class="card">
+  <h2>{{ icon('volume') }} AirPlay receiver</h2>
+  <pre class="logbox">{{ shairport_log }}</pre>
+</section>
+
+<section class="card">
+  <h2>{{ icon('sliders') }} Web UI</h2>
+  <pre class="logbox">{{ webui_log }}</pre>
+</section>
+
+<script>
+// Jump each log to the newest line, which is what you almost always want.
+document.querySelectorAll('.logbox').forEach(function (box) {
+  box.scrollTop = box.scrollHeight;
+});
+</script>
+{% endblock %}

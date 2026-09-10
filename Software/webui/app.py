@@ -38,6 +38,7 @@ if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
 import display_settings  # noqa: E402
+import runtime_state  # noqa: E402
 
 SHAIRPORT_CONF = Path("/etc/shairport-sync.conf")
 CONFIG_DIR = Path.home() / ".config" / "airplaymatrix-webui"
@@ -348,6 +349,8 @@ def dashboard():
         services={name: service_status(unit) for unit, name in RESTARTABLE.items()},
         led=led_status(),
         display=display_settings.load(),
+        np=now_playing(),
+        timezone=current_timezone(),
     )
 
 
@@ -509,6 +512,188 @@ def receiver_is_on() -> bool:
     """Whether the AirPlay receiver is currently running -- what the top-bar
     power button reflects and toggles."""
     return service_status("shairport-sync") == "active"
+
+
+REPO_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+def current_timezone() -> str:
+    try:
+        return Path("/etc/timezone").read_text().strip()
+    except OSError:
+        return ""
+
+
+def now_playing() -> dict:
+    """What the kiosk app last said it was showing.
+
+    Stale or missing means the app isn't running (or hasn't got that far),
+    which is worth showing as exactly that rather than as an error -- see
+    runtime_state.py.
+    """
+    state = runtime_state.read_json(runtime_state.NOW_PLAYING_PATH) or {}
+    age = time.time() - state.get("updated_at", 0)
+    state["stale"] = age > 120
+    return state
+
+
+@app.route("/diagnostics")
+def diagnostics():
+    """Everything needed to work out why the display is misbehaving, without
+    an SSH session -- which is otherwise the only way to see any of it."""
+    return render_template(
+        "diagnostics.html",
+        kiosk_log=runtime_state.tail(runtime_state.KIOSK_LOG_PATH, 400),
+        kiosk_log_path=runtime_state.KIOSK_LOG_PATH,
+        shairport_log=_journal("shairport-sync", 120),
+        webui_log=_journal("airplaymatrix-webui", 60),
+        display=display_settings.load(),
+        levels=display_settings.LOG_LEVELS,
+        version=_repo_version(),
+    )
+
+
+def _journal(unit: str, lines: int) -> str:
+    try:
+        r = subprocess.run(
+            ["journalctl", "-u", unit, "-n", str(lines), "--no-pager", "--output=short-iso"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"(could not read journal: {exc})"
+    return (r.stdout or r.stderr or "").strip() or "(nothing logged)"
+
+
+def _repo_version() -> dict:
+    """Short description of the checkout, for the update card."""
+    def git(*args: str) -> str:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(REPO_DIR), *args],
+                capture_output=True, text=True, timeout=20,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    return {
+        "commit": git("log", "-1", "--format=%h"),
+        "subject": git("log", "-1", "--format=%s"),
+        "date": git("log", "-1", "--format=%cd", "--date=short"),
+        "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+        "dirty": bool(git("status", "--porcelain")),
+    }
+
+
+@app.route("/settings/log-level", methods=["POST"])
+def set_log_level():
+    level = request.form.get("level", "")
+    try:
+        display_settings.set_log_level(level)
+    except ValueError:
+        flash("Unknown log level.", "error")
+        return redirect(url_for("diagnostics"))
+    flash(
+        f"Log level set to {level}. Restart the display app for it to take effect.",
+        "ok",
+    )
+    return redirect(url_for("diagnostics"))
+
+
+@app.route("/system/update", methods=["POST"])
+def update_from_git():
+    """Pull new code and report exactly what changed.
+
+    --ff-only on purpose: this box is a deployment target, not somewhere to
+    resolve a merge. If it can't fast-forward, something has been edited
+    locally and a human should look rather than have a button paper over it.
+    """
+    before = _repo_version().get("commit", "")
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(REPO_DIR), "pull", "--ff-only"],
+            capture_output=True, text=True, timeout=180,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        flash(f"Update failed: {exc}", "error")
+        return redirect(url_for("diagnostics"))
+
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip().splitlines()
+        flash(f"Update failed: {detail[-1] if detail else 'git pull returned an error'}", "error")
+        return redirect(url_for("diagnostics"))
+
+    after = _repo_version()
+    if after.get("commit") == before:
+        flash("Already up to date.", "ok")
+    else:
+        flash(
+            f"Updated to {after.get('commit')} \u2014 {after.get('subject')}. "
+            "Restart the display app to run the new code; if privileged commands "
+            "changed, reinstall the root helper below too.",
+            "ok",
+        )
+    return redirect(url_for("diagnostics"))
+
+
+@app.route("/system/install-privileged", methods=["POST"])
+def install_privileged():
+    ok, out = run_privileged("install-privileged")
+    flash("Root helper updated." if ok else f"Failed: {out}", "ok" if ok else "error")
+    return redirect(url_for("diagnostics"))
+
+
+@app.route("/settings/timezone", methods=["POST"])
+def set_timezone():
+    zone = request.form.get("zone", "").strip()
+    if not zone:
+        flash("No timezone given.", "error")
+        return redirect(url_for("dashboard"))
+    ok, out = run_privileged("set-timezone", zone)
+    flash(f"Timezone set to {zone}." if ok else f"Failed: {out}", "ok" if ok else "error")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/settings/export")
+def export_settings():
+    """Download the display settings as JSON.
+
+    Deliberately only display_settings: this app's own config.json holds the
+    session secret and the admin password hash, which have no business in a
+    file that gets emailed to oneself as a backup.
+    """
+    payload = json.dumps(display_settings.load(), indent=2) + "\n"
+    return app.response_class(
+        payload,
+        mimetype="application/json",
+        headers={"Content-Disposition": "attachment; filename=airplaymatrix-display-settings.json"},
+    )
+
+
+@app.route("/settings/import", methods=["POST"])
+def import_settings():
+    upload = request.files.get("settings")
+    if upload is None or not upload.filename:
+        flash("No file chosen.", "error")
+        return redirect(url_for("dashboard"))
+    try:
+        incoming = json.loads(upload.read().decode("utf-8"))
+        if not isinstance(incoming, dict):
+            raise ValueError("not a JSON object")
+    except (ValueError, UnicodeDecodeError) as exc:
+        flash(f"Not a valid settings file: {exc}", "error")
+        return redirect(url_for("dashboard"))
+
+    # Merge over the current settings and re-run them through load()'s
+    # validation by saving and reloading, so a hand-edited or older file
+    # can't introduce a key or type the app doesn't expect.
+    merged = {**display_settings.load(), **{
+        k: v for k, v in incoming.items() if k in display_settings.DEFAULTS
+    }}
+    display_settings.save(merged)  # type: ignore[arg-type]
+    restored = display_settings.load()
+    flash(f"Settings restored ({len(incoming)} keys read, {len(restored)} applied).", "ok")
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/system/power", methods=["POST"])

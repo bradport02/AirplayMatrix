@@ -28,6 +28,8 @@ from PySide2.QtCore import QCoreApplication, QTimer, QUrl, Qt
 from PySide2.QtGui import QCursor, QGuiApplication
 from PySide2.QtQml import QQmlApplicationEngine
 
+import display_settings
+
 from .app_controller import AppController
 
 QML_DIR = Path(__file__).resolve().parent / "qml"
@@ -38,8 +40,17 @@ def main() -> int:
     # logging in metadata.py, which is the only way to see what
     # shairport-sync actually sends for an event (pause in particular --
     # AirPlay 2 does not necessarily use the same codes AirPlay 1 did).
+    # Level comes from the web UI's Diagnostics page (display_settings'
+    # log_level), so a misbehaving track can be traced without an SSH
+    # session. The environment variable still wins when set, which keeps
+    # `AIRPLAYMATRIX_LOG_LEVEL=DEBUG python3 -m app_qt5.main` working for
+    # anyone debugging by hand.
+    try:
+        configured_level = display_settings.load()["log_level"]
+    except Exception:  # noqa: BLE001 -- logging must never block startup
+        configured_level = "INFO"
     logging.basicConfig(
-        level=os.environ.get("AIRPLAYMATRIX_LOG_LEVEL", "INFO").upper(),
+        level=os.environ.get("AIRPLAYMATRIX_LOG_LEVEL", configured_level).upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 

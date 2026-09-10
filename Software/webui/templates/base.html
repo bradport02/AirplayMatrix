@@ -14,6 +14,7 @@
     <nav>
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' }}" title="Settings" aria-label="Settings">{{ icon('sliders') }} <span class="nav-label">Settings</span></a>
       <a href="{{ url_for('wifi_page') }}" class="{{ 'active' if request.endpoint == 'wifi_page' }}" title="Wi-Fi" aria-label="Wi-Fi">{{ icon('wifi') }} <span class="nav-label">Wi-Fi</span></a>
+      <a href="{{ url_for('diagnostics') }}" class="{{ 'active' if request.endpoint == 'diagnostics' }}" title="Diagnostics" aria-label="Diagnostics">{{ icon('chip') }} <span class="nav-label">Diagnostics</span></a>
       <a href="{{ url_for('matrix_page') }}" class="{{ 'active' if request.endpoint == 'matrix_page' }}" title="Matrix" aria-label="Matrix">{{ icon('grid') }} <span class="nav-label">Matrix</span></a>
       {# Standby toggle. Submits the state we want to move *to*, rather than
          a bare "toggle", so a stale page can't flip the receiver the wrong

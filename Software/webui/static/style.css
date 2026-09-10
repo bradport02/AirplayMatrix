@@ -418,3 +418,40 @@ details[open] summary::after { transform: rotate(45deg); }
             drop-shadow(0 0 16px rgba(255, 60, 60, 0.75));
   }
 }
+
+/* Now-playing card: artwork beside the track text, stacking on a phone. */
+.now-playing {
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.np-art {
+  width: 64px;
+  height: 64px;
+  border-radius: 6px;
+  image-rendering: auto;
+  flex: none;
+}
+
+.np-title {
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+/* Log panes. Fixed height with its own scroll so three of them on one page
+   stay navigable, and monospace/nowrap so timestamped lines stay aligned
+   rather than wrapping into each other. */
+.logbox {
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  padding: 0.7rem 0.8rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  margin: 0;
+}

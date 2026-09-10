@@ -196,6 +196,48 @@ def cmd_restart_display(_args: argparse.Namespace) -> None:
     print("OK")
 
 
+def cmd_set_timezone(args: argparse.Namespace) -> None:
+    """The desk display shows a clock, so a wrong timezone is visible on the
+    wall. Validated against the system's own list rather than a pattern --
+    timedatectl will reject nonsense anyway, but failing here gives the web
+    UI something useful to say instead of a raw error."""
+    zone = args.zone
+    known = run(["timedatectl", "list-timezones"], timeout=15.0)
+    if known.returncode == 0 and zone not in known.stdout.split():
+        fail(f"unknown timezone: {zone}")
+    r = run(["timedatectl", "set-timezone", zone], timeout=15.0)
+    if r.returncode != 0:
+        fail(f"could not set timezone: {r.stderr.strip()}")
+    print(f"OK ({zone})")
+
+
+def cmd_install_privileged(_args: argparse.Namespace) -> None:
+    """Reinstall this script from the repo checkout.
+
+    The web UI's update button pulls new code, but this file lives outside
+    the checkout on purpose -- a user who can write the repo must not
+    thereby be able to change what runs as root. So an update can't refresh
+    it, and every new privileged command would otherwise need a manual SSH
+    step. This is the deliberate exception: the *currently trusted* copy is
+    what decides to replace itself, and it compiles the candidate first so a
+    broken file can't take every privileged action down with it.
+    """
+    source = Path(args_source_path())
+    if not source.is_file():
+        fail(f"source not found: {source}")
+    check = run(["python3", "-m", "py_compile", str(source)], timeout=30.0)
+    if check.returncode != 0:
+        fail(f"refusing to install, source does not compile: {check.stderr.strip()}")
+    r = run(["install", "-o", "root", "-g", "root", "-m", "0700", str(source), __file__])
+    if r.returncode != 0:
+        fail(f"install failed: {r.stderr.strip()}")
+    print("OK (privileged helper updated)")
+
+
+def args_source_path() -> str:
+    return "/home/airplaymatrix/Documents/AirplayMatrix-main/Software/webui/airplaymatrix-privileged.py"
+
+
 def cmd_soft_power(args: argparse.Namespace) -> None:
     """Standby, not shutdown: stop (or start) the AirPlay receiver only.
 
@@ -338,6 +380,13 @@ def main() -> int:
 
     p = sub.add_parser("restart-webui")
     p.set_defaults(func=cmd_restart_webui)
+
+    p = sub.add_parser("set-timezone")
+    p.add_argument("zone")
+    p.set_defaults(func=cmd_set_timezone)
+
+    p = sub.add_parser("install-privileged")
+    p.set_defaults(func=cmd_install_privileged)
 
     p = sub.add_parser("soft-power")
     p.add_argument("state", choices=["on", "off"])
