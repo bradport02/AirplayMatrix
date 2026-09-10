@@ -19,6 +19,64 @@ Item {
     // standard animation length, since there it's just the panel fading.
     readonly property int transitionMs: crossfade ? app.settings.crossfadeMs : Theme.durationSlow
 
+    // A track change that stays on the album already on screen. See
+    // TrackController._same_album_as_displayed for what counts as "the same
+    // album" -- artist AND album, both non-empty -- and why anything less
+    // certain than that falls back to the ordinary full transition.
+    //
+    // Playing straight through a record, the only two things that actually
+    // differ from one track to the next are the song title and the lyrics.
+    // So those are the only two things that move: the artwork, the blurred
+    // backdrop and the artist/album line under the title are left strictly
+    // alone, not faded down and back up to the same values. That is both
+    // the smoother look and, on this hardware, by far the cheapest
+    // transition available -- see Main.qml's showTrack.
+    //
+    // Applies in both transition modes, and in neither of them does it add
+    // per-frame work: it only ever removes fades that had nothing to say.
+    readonly property bool sameAlbumChange: app.track.sameAlbumTransition
+
+    // The window in which the outgoing track's text is off screen, shared
+    // by both fade groups so they can never disagree about when it opens
+    // and closes. Phase 1 of a change -- noticed, metadata still arriving
+    // -- is deliberately *not* in it; the long comment on textColumn's
+    // opacity below walks through all three phases and why.
+    readonly property bool textHidden: app.track.readyToTransition || !root.artworkReady
+
+    // The song title and the lyrics, faded as one piece, and the only thing
+    // that moves on a same-album change.
+    //
+    // Kept as a plain animated number here rather than as the opacity of
+    // some wrapper Item for two reasons. The pair isn't contiguous in the
+    // layout -- the artist/album line sits between them and is precisely
+    // what must not move -- so there is no single item to wrap. And this
+    // number is always in the tree whatever the showDetails/showLyrics web
+    // UI toggles are set to, which the handshake below depends on: with
+    // both toggles off there would otherwise be no item left on screen to
+    // report a fade-out from, and the transition would have to wait out
+    // FADE_OUT_GRACE_MS on every single track.
+    property real songOpacity: (root.sameAlbumChange && root.textHidden) ? 0 : 1
+
+    Behavior on songOpacity {
+        NumberAnimation { duration: root.transitionMs; easing.type: Easing.InOutQuad }
+    }
+
+    // Same contract as the two opacity handshakes further down: reaching
+    // zero is what tells TrackController the outgoing track is off screen
+    // and the snapshot may be swapped (see TrackController.fadeOutComplete).
+    // On a same-album change this is the only thing that leaves the screen,
+    // so it is the only thing that can report -- the panel and the text
+    // column both stay at full opacity throughout and their handlers never
+    // fire. Guarded on sameAlbumChange as well as trackChanging so that a
+    // verdict withdrawn mid-fade (TrackController._recheck_same_album)
+    // hands the handshake straight back to whichever group is now doing the
+    // fading, rather than both claiming it.
+    onSongOpacityChanged: {
+        if (root.sameAlbumChange && songOpacity <= 0 && app.track.trackChanging) {
+            app.track.fadeOutComplete()
+        }
+    }
+
     // Idle state -- no AirPlay session open. Deliberately static: this is
     // the screen that's on-air the most (sitting there waiting for a
     // session to start), so on the Zero WH's single ARM1176 core it's the
@@ -161,8 +219,16 @@ Item {
             //      and reaching zero is what releases the snapshot swap.
             //   3. swapped -> stays out until the incoming artwork has
             //      decoded, then comes back in as the artwork dissolves.
+            //
+            // Excluded on a same-album change, in either mode: the artist
+            // and album under the title are unchanged there, so taking this
+            // whole column out would fade text that has nothing new to say.
+            // root.songOpacity handles that case instead, moving only the
+            // title and the lyrics. The two are mutually exclusive by
+            // construction -- exactly one of them fades per change.
             opacity: (root.crossfade
-                      && (app.track.readyToTransition || !root.artworkReady)) ? 0 : 1
+                      && !root.sameAlbumChange
+                      && root.textHidden) ? 0 : 1
 
             Behavior on opacity {
                 NumberAnimation { duration: root.transitionMs; easing.type: Easing.InOutQuad }
@@ -171,8 +237,10 @@ Item {
             // Crossfade mode's equivalent of the panel-level handshake
             // below: nothing else is leaving the screen, so this is what
             // tells TrackController it's safe to swap the track over.
+            // Not on a same-album change -- root.songOpacity reports then.
             onOpacityChanged: {
-                if (root.crossfade && opacity <= 0 && app.track.trackChanging) {
+                if (root.crossfade && !root.sameAlbumChange
+                        && opacity <= 0 && app.track.trackChanging) {
                     app.track.fadeOutComplete()
                 }
             }
@@ -197,8 +265,21 @@ Item {
                     font.weight: Font.Bold
                     elide: Text.ElideRight
                     Layout.fillWidth: true
+                    // The song title is one of the two things that changes
+                    // between tracks on one album, so it is one of the two
+                    // that fade. Sits at 1 for every other kind of change,
+                    // where the column around it is doing the fading
+                    // instead. Opacity only, never `visible` -- the layout
+                    // must not reflow around a title that is on its way out.
+                    opacity: root.songOpacity
                 }
                 Text {
+                    // Deliberately has no fade of its own. On a same-album
+                    // change this is the line that proves the point: artist
+                    // and album are both unchanged, so the binding doesn't
+                    // even re-evaluate (TrackController._publish only emits
+                    // artistChanged/albumChanged when the value actually
+                    // moves) and the text simply stays on screen, untouched.
                     text: [app.track.artist, app.track.album].filter(function (s) { return s.length > 0 }).join(" — ")
                     color: app.track.textIsDark ? Theme.colorTextSecondaryOnLight : Theme.colorTextSecondary
                     font.family: Theme.fontFamily
@@ -221,6 +302,12 @@ Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 visible: app.settings.showLyrics
+                // The other half of the same-album fade, moving in lockstep
+                // with the title above it off the same number. Costs
+                // nothing while it sits at 1: opacity is a scene-graph
+                // property, not a layer, so no render target is allocated
+                // for it and the panel is composited exactly as before.
+                opacity: root.songOpacity
                 previousLine: root.previousLine
                 currentLine: root.currentLine
                 nextLine: root.nextLine

@@ -103,6 +103,15 @@ class _Transition:
     settled: bool = False
     faded_out: bool = False
 
+    # Whether this change stays on the album already on screen, and so needs
+    # only the song title and the lyrics to move -- see
+    # TrackController._same_album_as_displayed. It lives here with the other
+    # two for the same reason they do: it is a property of one change and
+    # has no meaning outside one. Held as a long-lived boolean it would
+    # survive into the next change, and "the previous change was a
+    # same-album one" is not a question anything wants answered.
+    same_album: bool = False
+
     @property
     def ready(self) -> bool:
         return self.settled and self.faded_out
@@ -122,6 +131,7 @@ class TrackController(QObject):
     bridgeConnectedChanged = Signal()
     trackChangingChanged = Signal()
     readyToTransitionChanged = Signal()
+    sameAlbumTransitionChanged = Signal()
     contentReadyChanged = Signal()
     # Fires when the *live* track identity changes, ahead of anything being
     # published to the display. LyricsController listens to this rather than
@@ -408,14 +418,17 @@ class TrackController(QObject):
         # Only the *first* identity item opens the transition. The others
         # (artist, album) arrive right behind it and must not reopen or
         # extend anything -- what the panel is waiting on from here is the
-        # artwork, and that's what _on_artwork_touched resolves.
+        # artwork, and that's what _on_artwork_touched resolves. They do get
+        # a say in exactly one thing: the same-album verdict below was taken
+        # before they landed, so it is re-taken as they land.
         if self._transition is not None:
+            self._recheck_same_album()
             return
         LOG.debug("transition: opened (content_ready=%s)", self._content_ready)
         # A fade-out is always assumed owed; either QML's report or the
         # grace timer satisfies it. See FADE_OUT_GRACE_MS for why that
         # can't be inferred from _content_ready.
-        self._transition = _Transition()
+        self._transition = _Transition(same_album=self._same_album_as_displayed())
         self._settle_timer.stop()
         self._fade_grace_timer.stop()
         if self._artwork_is_new():
@@ -424,8 +437,115 @@ class TrackController(QObject):
             self._settle_timer.start()
         else:
             self._max_wait_timer.start()
+        # Same-album first, then trackChanging -- deliberately, and the
+        # order matters. Main.qml's showTrack reads both, and QML
+        # re-evaluates it after *each* emission with the other property
+        # still sitting at the value it was last notified of. Announcing the
+        # change first would therefore show it one intermediate state of "a
+        # change is in flight and it is not a same-album one", which is
+        # precisely the combination that takes the whole panel and the
+        # backdrop off screen. Nothing renders between two synchronous
+        # emits, so it would most likely never be seen -- but the panel
+        # staying put is the entire feature, and it costs nothing to make it
+        # true of every intermediate state rather than just the final one.
+        self.sameAlbumTransitionChanged.emit()
         self.trackChangingChanged.emit()
         self.readyToTransitionChanged.emit()
+
+    def _same_album_as_displayed(self) -> bool:
+        """Whether the incoming track is simply the next one off the album
+        that is already on screen.
+
+        The key is artist AND album, never album alone. Album titles collide
+        constantly -- "Greatest Hits", "Live", "Singles", and the empty
+        string every sender that doesn't populate `asal` leaves behind -- so
+        matching on the album by itself would declare two unrelated records
+        the same album and cut one cover straight into the other with no
+        transition at all. Pairing it with the artist is also exactly the
+        guarantee the display needs rather than a merely-safer key: the
+        details line under the title renders artist and album together, and
+        this whole feature's promise is that that line does not move. If
+        either half of it differs, something on screen has to acknowledge
+        that, so it has to be an ordinary full transition.
+
+        The price of that strictness is compilations: a "Various Artists"
+        record changes artist every track, so it gets the full transition
+        even though its cover never changes. That is the right way round to
+        be wrong -- the artist text really is changing there.
+
+        Empty fields never match, in either direction. An unknown album is
+        not evidence of sameness, and treating two blanks as equal would
+        turn "this sender sends no album metadata" into "every track is off
+        the same album", i.e. artwork that never transitions again for the
+        rest of the session. Same for the artist.
+
+        And there has to be something on screen worth keeping. Before the
+        first publish of a session _displayed is still empty, so there is no
+        established album for the incoming track to be the same as.
+        """
+        if not self._content_ready:
+            return False
+        with self._lock:
+            # Both sides read under one lock: _publish() swaps _displayed
+            # wholesale, and comparing against half of the old snapshot and
+            # half of the new one would be meaningless.
+            artist = self._tracker.state.artist
+            album = self._tracker.state.album
+            displayed_artist = self._displayed["artist"]
+            displayed_album = self._displayed["album"]
+        if not artist or not album:
+            return False
+        return artist == displayed_artist and album == displayed_album
+
+    def _recheck_same_album(self) -> None:
+        """Withdraw a same-album verdict the rest of the metadata has since
+        contradicted.
+
+        The verdict has to be taken the instant the transition opens --
+        "fade" mode starts moving the panel right there, so there is nothing
+        to wait with -- but at that instant it is only provisional. The
+        tracker has no per-track boundary: it holds the *previous* track's
+        artist and album until an item actually replaces them (see
+        TrackTracker.apply), so a transition opened by the title arriving on
+        its own compares the incoming track against fields that still
+        describe the outgoing one, and every change looks like a same-album
+        change until asar/asal catch up.
+
+        Nothing can slip past this. _emit_changes fires _identityTouched on
+        any change to title, artist OR album, so every value this verdict is
+        built from is re-examined the moment it moves -- there is no path by
+        which the album can change during a transition without arriving
+        here. What is *not* guaranteed is that it changes before the swap:
+        a sender that revises the album a beat after the artwork has landed
+        misses this window entirely, but that lands as an ordinary mid-track
+        metadata refinement, which opens a transition of its own and
+        corrects the display in full.
+
+        In practice they catch up in the same burst, microseconds later on
+        the metadata thread and usually within the same GUI-thread event
+        loop turn, so this runs before a single frame has been rendered and
+        the provisional verdict is never seen at all. When a sender splits
+        that burst across separate pipe reads it can cost one frame of a
+        fade that then reverses -- on the order of 2% of opacity, at the
+        very start of the ease. That is the deliberate trade: the
+        alternative is delaying the fade on *every* track change by a
+        settling window, to cover a case that resolves itself in a frame.
+
+        One-way on purpose. A verdict can only be downgraded, never
+        upgraded. By the time this could promote a change back to
+        same-album the panel may already be visibly on its way out, and
+        snapping it back to full opacity mid-fade is a far worse artefact
+        than the conservative transition it would be "correcting".
+        Downgrading is safe because nothing has moved yet.
+        """
+        transition = self._transition
+        if transition is None or not transition.same_album:
+            return
+        if self._same_album_as_displayed():
+            return
+        LOG.debug("transition: same-album verdict withdrawn, transitioning in full")
+        transition.same_album = False
+        self.sameAlbumTransitionChanged.emit()
 
     def _artwork_is_new(self) -> bool:
         """Whether the tracker holds real, not-yet-displayed artwork.
@@ -561,7 +681,16 @@ class TrackController(QObject):
         if self._transition is None:
             return
         self._transition = None
+        # trackChanging first, same-album second -- the mirror image of the
+        # order _on_identity_touched emits them in, and for the mirror
+        # reason. Retiring the same-album verdict while showTrack still has
+        # trackChanging cached as true would hand it that same "changing,
+        # and not a same-album change" combination on the way *out* of a
+        # transition the panel sat through untouched, which would fade it
+        # out just as the new track appears. Announcing the change is over
+        # first leaves no such state to observe.
         self.trackChangingChanged.emit()
+        self.sameAlbumTransitionChanged.emit()
         self.readyToTransitionChanged.emit()
 
     def _publish(self) -> None:
@@ -656,6 +785,25 @@ class TrackController(QObject):
     # display sitting empty for that whole gap.
     readyToTransition = Property(
         bool, _get_ready_to_transition, notify=readyToTransitionChanged
+    )
+
+    def _get_same_album_transition(self) -> bool:
+        return self._transition is not None and self._transition.same_album
+
+    # A change is in flight AND it stays on the album already on screen, so
+    # the cover, the blurred backdrop and the artist/album line are all
+    # correct for the incoming track before it even arrives. QML narrows the
+    # transition down to the song title and the lyrics while this is set and
+    # leaves everything else completely alone -- see NowPlayingView.qml.
+    #
+    # It goes false again with the transition itself rather than latching,
+    # which is what keeps a *mid-track* artwork update (see
+    # _on_artwork_touched's late-publish path) behaving exactly as it always
+    # has: there is no transition in flight then, so this is false, and the
+    # cover changing under a panel that thought it had nothing to do is not
+    # a case QML has to reason about at all.
+    sameAlbumTransition = Property(
+        bool, _get_same_album_transition, notify=sameAlbumTransitionChanged
     )
 
     def _get_content_ready(self) -> bool:

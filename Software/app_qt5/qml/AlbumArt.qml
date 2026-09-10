@@ -97,7 +97,25 @@ Item {
             preloadSource: app.track.pendingArtworkSource
             source: root.effectiveSource
             decodeSize: root.decodeSize
-            duration: app.settings.transitionMode === "crossfade" ? app.settings.crossfadeMs : 0
+            // "fade" mode normally leaves this at 0: the whole panel is
+            // faded out around the swap, so a dissolve would never be seen
+            // and paying for one would be waste. A same-album change is the
+            // one exception -- the panel deliberately stays on screen
+            // throughout, so a zero-length swap would be a hard cut in full
+            // view. Almost always there is nothing to swap at all: the same
+            // artist and album means the sender re-sends byte-identical
+            // cover art, so effectiveSource never changes value and no
+            // animation runs. This only earns its keep on the oddity that
+            // does change it -- a deluxe edition reusing the album title,
+            // say -- and it costs a binding re-evaluation twice per track
+            // change to cover, not a frame of GPU time.
+            //
+            // Theme.durationSlow rather than crossfadeMs so it matches the
+            // title/lyrics fade it runs alongside, which uses the same value
+            // in this mode (NowPlayingView.transitionMs).
+            duration: app.settings.transitionMode === "crossfade"
+                      ? app.settings.crossfadeMs
+                      : (app.track.sameAlbumTransition ? Theme.durationSlow : 0)
             visible: root.effectiveSource !== ""
         }
 

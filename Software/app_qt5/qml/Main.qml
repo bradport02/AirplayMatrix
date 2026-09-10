@@ -28,10 +28,29 @@ ApplicationWindow {
     // trackChanging/artworkReady here would fade the whole lot out
     // underneath that -- which is what made the backdrop drop out
     // mid-crossfade.
+    //
+    // A change that stays on the same album is the third way through here,
+    // and for "fade" mode it is the whole point of the feature: the cover
+    // and the blurred backdrop are already the right ones for the incoming
+    // track, so taking them off screen and bringing the identical image
+    // back would be motion that says nothing. Holding showTrack true keeps
+    // both of them exactly where they are, and NowPlayingView narrows the
+    // transition to the two things that genuinely differ -- the song title
+    // and the lyrics. "crossfade" mode already never leaves the screen, so
+    // this changes nothing for it; it reads the same flag lower down to
+    // decide *which* text fades.
+    //
+    // It also makes this the cheapest track change the app can do. Nothing
+    // fades, nothing dissolves, and because the same album means the sender
+    // re-sends byte-identical cover art, artworkSource never changes value
+    // -- so there is no decode, and the single full-screen blur below is
+    // not re-rendered even once. See Background.qml on why that blur is the
+    // one cost on this device worth going out of the way to avoid.
     readonly property bool crossfade: app.settings.transitionMode === "crossfade"
     readonly property bool showTrack: app.track.sessionActive
                                       && app.track.contentReady
                                       && (window.crossfade
+                                          || app.track.sameAlbumTransition
                                           || (!app.track.trackChanging && nowPlaying.artworkReady))
 
     Background {

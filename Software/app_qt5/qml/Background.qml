@@ -78,9 +78,18 @@ Item {
     QtObject {
         id: backdrop
         property bool frontIsA: true
-        // Matches the artwork tile, so backdrop and cover dissolve together.
+        // Matches the artwork tile, so backdrop and cover dissolve together
+        // -- including the same-album exception, which is why this repeats
+        // AlbumArt.qml's expression rather than simplifying it. See that
+        // file for the reasoning; the short version is that a same-album
+        // change leaves the backdrop on screen, so the rare cover that does
+        // differ has to dissolve rather than cut. In the normal case the
+        // source never changes value, no opacity animates, and the single
+        // blur pass below is not re-rendered at all.
         readonly property int duration:
-            app.settings.transitionMode === "crossfade" ? app.settings.crossfadeMs : 0
+            app.settings.transitionMode === "crossfade"
+            ? app.settings.crossfadeMs
+            : (app.track.sameAlbumTransition ? Theme.durationSlow : 0)
     }
 
     // Same effective source as AlbumArt, so the backdrop turns over in the
