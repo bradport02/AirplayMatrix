@@ -211,31 +211,46 @@ def cmd_set_timezone(args: argparse.Namespace) -> None:
     print(f"OK ({zone})")
 
 
+# Every root-owned script this project installs, as (source, mode). They
+# live outside the repo checkout on purpose -- being able to write the repo
+# must not be the same as being able to change what runs as root -- which
+# means a `git pull` cannot refresh them and something has to.
+ROOT_SCRIPTS = (
+    ("webui/airplaymatrix-privileged.py", "/usr/local/bin/airplaymatrix-privileged.py", "0700"),
+    ("cec/airplay-tv-power.sh", "/usr/local/bin/airplay-tv-power.sh", "0755"),
+    ("cec/airplay-cec-remote.py", "/usr/local/bin/airplay-cec-remote.py", "0755"),
+)
+
+SOFTWARE_DIR = Path("/home/airplaymatrix/Documents/AirplayMatrix-main/Software")
+
+
 def cmd_install_privileged(_args: argparse.Namespace) -> None:
-    """Reinstall this script from the repo checkout.
+    """Reinstall the root-owned scripts from the repo checkout.
 
-    The web UI's update button pulls new code, but this file lives outside
-    the checkout on purpose -- a user who can write the repo must not
-    thereby be able to change what runs as root. So an update can't refresh
-    it, and every new privileged command would otherwise need a manual SSH
-    step. This is the deliberate exception: the *currently trusted* copy is
-    what decides to replace itself, and it compiles the candidate first so a
-    broken file can't take every privileged action down with it.
+    This is the deliberate exception to "the checkout cannot change what runs
+    as root": the *currently trusted* copy is what decides to replace itself
+    and its siblings, and each candidate is compiled or syntax-checked first
+    so a broken file cannot take every privileged action down with it.
+
+    Covers all of them, not just this file. An update that fixes, say, the
+    TV-power hook is no use if applying it still needs an SSH session.
     """
-    source = Path(args_source_path())
-    if not source.is_file():
-        fail(f"source not found: {source}")
-    check = run(["python3", "-m", "py_compile", str(source)], timeout=30.0)
-    if check.returncode != 0:
-        fail(f"refusing to install, source does not compile: {check.stderr.strip()}")
-    r = run(["install", "-o", "root", "-g", "root", "-m", "0700", str(source), __file__])
-    if r.returncode != 0:
-        fail(f"install failed: {r.stderr.strip()}")
-    print("OK (privileged helper updated)")
-
-
-def args_source_path() -> str:
-    return "/home/airplaymatrix/Documents/AirplayMatrix-main/Software/webui/airplaymatrix-privileged.py"
+    installed = []
+    for relative, destination, mode in ROOT_SCRIPTS:
+        source = SOFTWARE_DIR / relative
+        if not source.is_file():
+            fail(f"source not found: {source}")
+        if source.suffix == ".py":
+            check = run(["python3", "-m", "py_compile", str(source)], timeout=60.0)
+        else:
+            check = run(["bash", "-n", str(source)], timeout=30.0)
+        if check.returncode != 0:
+            fail(f"refusing to install {source.name}: {check.stderr.strip()}")
+        r = run(["install", "-o", "root", "-g", "root", "-m", mode, str(source), destination])
+        if r.returncode != 0:
+            fail(f"install of {source.name} failed: {r.stderr.strip()}")
+        installed.append(source.name)
+    print("OK (" + ", ".join(installed) + ")")
 
 
 def cmd_soft_power(args: argparse.Namespace) -> None:
@@ -251,10 +266,13 @@ def cmd_soft_power(args: argparse.Namespace) -> None:
     standby shouldn't quietly come back on when the Pi restarts.
     """
     if args.state == "off":
-        r = run(["systemctl", "disable", "--now", "shairport-sync"], timeout=30.0)
+        # Generous: stopping the receiver runs shairport-sync's own exit
+        # hooks (see cec/airplay-tv-power.sh), so this is never just a
+        # process signal.
+        r = run(["systemctl", "disable", "--now", "shairport-sync"], timeout=90.0)
         action = "standby"
     else:
-        r = run(["systemctl", "enable", "--now", "shairport-sync"], timeout=30.0)
+        r = run(["systemctl", "enable", "--now", "shairport-sync"], timeout=90.0)
         action = "active"
     if r.returncode != 0:
         fail(f"could not switch receiver to {action}: {r.stderr.strip()}")

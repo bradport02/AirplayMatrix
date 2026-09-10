@@ -44,7 +44,13 @@ log() { logger -t "$LOG_TAG" "$*"; }
 # unless something is actually playing", which is what it always meant.
 is_playing() {
   local status
-  status=$(dbus-send --system --print-reply=literal \
+  # --reply-timeout is not optional here. This runs from shairport-sync's
+  # own exit hook, which fires while the service is stopping -- so the D-Bus
+  # name it is querying is its own, and on its way out. Without a timeout
+  # dbus-send waits its 25s default, systemd waits for the hook, and
+  # "systemctl stop" appears to hang for half a minute. Failing fast reads
+  # as "not playing", which is the right answer when it is shutting down.
+  status=$(dbus-send --system --reply-timeout=2000 --print-reply=literal \
              --dest=org.mpris.MediaPlayer2.ShairportSync \
              /org/mpris/MediaPlayer2 \
              org.freedesktop.DBus.Properties.Get \
