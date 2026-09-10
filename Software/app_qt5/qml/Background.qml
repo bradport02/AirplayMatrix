@@ -38,9 +38,18 @@ Item {
     // politely while the entire background cut to the next song behind it.
     property bool showArtwork: false
 
-    // How much smaller than the screen the blur is computed at. 6 puts a
-    // 1080p backdrop through a 320x180 blur.
-    readonly property int blurDownscale: 6
+    // How much smaller than the screen the blur is computed at. 4 puts a
+    // 1080p backdrop through a 480x270 blur.
+    //
+    // This was 6 (320x180) when the scrim below was still a full-screen
+    // blend. Folding that into the stage freed roughly two million blended
+    // pixels per frame, which buys a finer blur far more usefully than it
+    // buys anything else -- the backdrop is the one surface here whose
+    // resolution is actually below what it is drawn at, since the artwork
+    // tile already decodes at its exact on-screen size and the GPU caps
+    // textures at 2048 anyway. Still a fraction of the cost of blurring at
+    // full resolution, which is what made crossfades stutter.
+    readonly property int blurDownscale: 4
 
     Rectangle {
         anchors.fill: parent
@@ -63,8 +72,9 @@ Item {
     // one has decoded -- reassigning a single Image's source would blank
     // the backdrop for the length of the decode.
     //
-    // Both decode at 320px: this is only ever seen through a radius-64
-    // blur, which destroys far more detail than the downscale does.
+    // Both decode at 480px, matching the blur stage they feed: this is only
+    // ever seen through a heavy blur, which destroys far more detail than
+    // the downscale does.
     QtObject {
         id: backdrop
         property bool frontIsA: true
@@ -149,8 +159,8 @@ Item {
                 Image {
                     id: imageA
                     anchors.fill: parent
-                    sourceSize.width: 320
-                    sourceSize.height: 320
+                    sourceSize.width: 480
+                    sourceSize.height: 480
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                     cache: false
@@ -162,8 +172,8 @@ Item {
                 Image {
                     id: imageB
                     anchors.fill: parent
-                    sourceSize.width: 320
-                    sourceSize.height: 320
+                    sourceSize.width: 480
+                    sourceSize.height: 480
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                     cache: false
@@ -179,15 +189,22 @@ Item {
                 // same factor to keep the on-screen blur the same size.
                 radius: 64 * Theme.uiScale / root.blurDownscale
             }
-        }
 
-        // Darkens the blurred artwork so foreground text stays legible,
-        // without washing out its colour the way a heavier scrim would.
-        Rectangle {
-            anchors.fill: parent
-            color: "black"
-            opacity: 0.35
-        }
+            // Darkens the blurred artwork so foreground text stays legible,
+            // without washing out its colour the way a heavier scrim would.
+            //
+            // Deliberately *inside* the scaled-down stage. It is a flat
+            // black wash, so drawing it here and letting it scale up with
+            // the blur is pixel-identical to drawing it full-screen -- but
+            // it costs a 320x180 blend instead of a 1920x1080 one. During a
+            // crossfade the backdrop redraws every frame, so that is a
+            // couple of million blended pixels per frame saved on a GPU
+            // whose limit here is fill rate, not memory or CPU.
+            Rectangle {
+                anchors.fill: parent
+                color: "black"
+                opacity: 0.35
+            }
     }
 
     // Vignette so the top/bottom bars read clearly over artwork -- only
