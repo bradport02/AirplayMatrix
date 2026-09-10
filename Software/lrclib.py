@@ -17,8 +17,6 @@ from __future__ import annotations
 import logging
 import re
 import threading
-import urllib.parse
-import urllib.request
 from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Optional
@@ -97,6 +95,15 @@ def parse_lrc(text: str) -> SyncedLyrics:
 
 
 def _request(path: str, params: dict[str, str]) -> Optional[list | dict]:
+    # Imported here rather than at module scope: urllib drags in http,
+    # email and ssl behind it, which costs about 1.6s on the Zero WH's
+    # ARM1176 -- paid during startup, in front of a black screen, for a
+    # lookup that cannot happen until a track is playing. Python caches
+    # modules, so the first lookup pays it once and every later one is free.
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
     url = f"{API_ROOT}/{path}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:

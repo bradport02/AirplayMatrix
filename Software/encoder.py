@@ -31,17 +31,17 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from PIL import Image
 
 LOG = logging.getLogger(__name__)
 
 MATRIX_SIZE = 64
 
-RESAMPLE_MODES = {
-    "lanczos": Image.LANCZOS,
-    "box": Image.BOX,
-    "bicubic": Image.BICUBIC,
-}
+# Named rather than holding Pillow constants, so this module imports without
+# Pillow. Importing PIL.Image costs about 1.1s on the Zero WH and nothing
+# here runs until artwork arrives, which is always well after startup --
+# paying it up front just lengthens the black screen at boot. Resolved in
+# _resample() below.
+RESAMPLE_MODES = ("lanczos", "box", "bicubic")
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,24 @@ class EncodedArtwork:
         return len(self.b64) * framing_bits / baud
 
 
+def _resample(name: str):
+    """Resolve a RESAMPLE_MODES name to Pillow's filter constant.
+
+    Pillow is imported here, and in the handful of functions below that
+    actually touch an image, rather than at module scope -- see
+    RESAMPLE_MODES. Python caches modules, so only the first call pays for
+    it. The annotations elsewhere in this file are strings (PEP 563, via the
+    __future__ import above) and so never need it at all.
+    """
+    from PIL import Image
+
+    return {
+        "lanczos": Image.LANCZOS,
+        "box": Image.BOX,
+        "bicubic": Image.BICUBIC,
+    }.get(name, Image.LANCZOS)
+
+
 def downscale(data: bytes, resample: str = "lanczos") -> Image.Image:
     """Decode and reduce artwork to MATRIX_SIZE square, RGB, no alpha.
 
@@ -66,6 +84,8 @@ def downscale(data: bytes, resample: str = "lanczos") -> Image.Image:
     has no bezel, so letterbox bars would look like part of the artwork.
     Alpha is flattened onto black, matching an unlit panel pixel.
     """
+    from PIL import Image
+
     img = Image.open(io.BytesIO(data))
     # Same trick as quadrant_colors(): let the JPEG decoder do the first,
     # cheapest chunk of the downscale itself instead of decoding 1400x1400
@@ -92,7 +112,7 @@ def downscale(data: bytes, resample: str = "lanczos") -> Image.Image:
         top = (height - edge) // 2
         img = img.crop((left, top, left + edge, top + edge))
 
-    filt = RESAMPLE_MODES.get(resample, Image.LANCZOS)
+    filt = _resample(resample)
 
     # Pillow's reduce() does an exact integer-factor box average first, which
     # both speeds up the large-ratio case and suppresses the aliasing that a
@@ -164,6 +184,8 @@ def blank(quality: int = 85) -> EncodedArtwork:
     shutting down) rather than leaving the last artwork frozen on-screen.
     Same baseline/4:4:4 JPEG settings as encode() for TJpgDec compatibility.
     """
+    from PIL import Image
+
     img = Image.new("RGB", (MATRIX_SIZE, MATRIX_SIZE), (0, 0, 0))
     buf = io.BytesIO()
     img.save(
@@ -206,6 +228,8 @@ def quadrant_colors(data: bytes) -> Optional[QuadrantColors]:
     """Reduce artwork straight to a 2x2 image with box averaging -- each of
     the four resulting pixels is exactly the mean colour of that quadrant,
     which is cheaper and simpler than sampling/averaging pixels by hand."""
+    from PIL import Image
+
     try:
         img = Image.open(io.BytesIO(data))
         # The answer here is four averaged pixels, so decoding a 1400x1400

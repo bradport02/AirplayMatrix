@@ -837,6 +837,16 @@ fi
 # needed for a working receiver, so they stay opt-in rather than being
 # folded into a script people run on a whim.
 log ""
+# The kiosk tty autologs in, and a login shell prints the motd: Debian's
+# licence paragraph, a uname line, and the Pi's usb-gadget notice. On a wall
+# display that is a wall of text between the boot placeholder and the app
+# starting. .hushlogin suppresses it (and the "Last login" line) without
+# touching the motd itself, so an interactive SSH session is unaffected.
+if [[ "$DISPLAY_MODE" == kiosk ]]; then
+  sudo -u "$TARGET_USER" touch "$TARGET_HOME/.hushlogin"
+  log "Quietened the kiosk tty's login banner (~/.hushlogin)."
+fi
+
 log "Optional, one-time, run by hand if you want them:"
 log "  LED matrix EQ meter (ALSA loopback tap on the audio output):"
 log "    sudo bash $SOFTWARE_DIR/matrix/setup-eq-meter.sh"

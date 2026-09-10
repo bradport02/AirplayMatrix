@@ -16,16 +16,21 @@ import threading
 import time
 from typing import NamedTuple, Optional, Union
 
-import serial
-from PIL import Image
 from PySide2.QtCore import Property, QObject, Signal, Slot
 
 from encoder import EncodedArtwork, blank, encode, encode_image
-from matrix.link import MatrixLink, PayloadTooLarge, find_matrix_port
 
 from .settings_controller import SettingsController
 from .track_controller import TrackController
 
+# pyserial, Pillow and matrix/link are all pulled in on the worker thread
+# below rather than here. Between them they cost well over a second on the
+# Zero WH's ARM1176, and none of it is needed until a frame is actually
+# encoded or a panel actually found -- both of which happen on that thread,
+# after the display is already up. Paying for them at import time just
+# lengthened the black screen at boot for hardware that may not even be
+# attached. Annotations in this file are strings (PEP 563), so they never
+# need the real modules.
 LOG = logging.getLogger(__name__)
 
 RECONNECT_INTERVAL = 3.0  # seconds before the *first* retry after a drop
@@ -145,6 +150,9 @@ class MatrixController(QObject):
     # -- background thread --
 
     def _run(self) -> None:
+        import serial
+        from matrix.link import MatrixLink, PayloadTooLarge, find_matrix_port
+
         link: Optional[MatrixLink] = None
         retry_delay = RECONNECT_INTERVAL
         while True:
@@ -184,6 +192,12 @@ class MatrixController(QObject):
                 link = self._close(link)
 
     def _try_connect(self) -> Optional[MatrixLink]:
+        # Same deferral as _run, which is this method's only caller -- both
+        # already resolved by the time it runs, and Python caches modules so
+        # this is a dict lookup, not a second load.
+        import serial
+        from matrix.link import MatrixLink, find_matrix_port
+
         port = find_matrix_port()
         if not port:
             self._set_status("disconnected")
