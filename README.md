@@ -8,7 +8,8 @@ TV-remote button presses into AirPlay transport controls, advertises the
 AirPlay device name as its CEC OSD name (shown as the HDMI input's label by
 receivers/TVs that query it -- support varies by brand/firmware), sets
 AirPlay volume to a configured level on every new connection, and exposes a
-small password-protected web UI for day-to-day settings.
+small password-protected web UI for day-to-day settings, what's currently
+playing, the display's own logs, and updating itself from this repo.
 
 AirPlay 2 (as opposed to classic AirPlay 1, which is all `apt`'s
 shairport-sync package supports) is what makes this behave like a real
@@ -111,6 +112,10 @@ passthrough, LED matrix output, and the settings web UI.
             shairport-sync has no connection-level hook, so the kiosk app calls
             `airplay-tv-power.sh wake` off the metadata stream's own "conn" item.
 
+  Status:   kiosk app → ~/.local/state/airplaymatrix/{now-playing.json,kiosk.log}
+            → web UI reads both (it cannot ask shairport-sync directly: the
+              metadata FIFO has a single reader, and that's the kiosk app)
+
   Settings: airplaymatrix-webui (Flask, :8080) → sudo → airplaymatrix-privileged.py
             (device name, Wi-Fi, TV timeout, hostname, restarts, reboot, standby,
              restart-webui)
@@ -145,6 +150,8 @@ Software/
                                 show_details, lyrics_offset_seconds, connect_volume_percent, eq_meter_enabled,
                                 progress_dot_enabled, transition_mode + crossfade_seconds, sync_on_connect
   airplay_name.py                reads the AirPlay device name out of shairport-sync.conf, shared by both kiosk apps' "Discoverable: <name>" idle-screen line
+  runtime_state.py               agreed locations under ~/.local/state for what the kiosk app leaves for the web UI to read
+                                 (now-playing JSON, the kiosk log), plus the atomic write and the log tail both sides use
   matrix/
     link.py                    serial protocol to the ESP32/HUB75 firmware
     matrix_daemon.py            headless metadata → matrix bridge (no Qt), for constrained hardware
@@ -155,7 +162,10 @@ Software/
     airplay-cec-remote.service
     airplaymatrix-quit.sh           closes the desk-display kiosk app (bound to Shift+X)
   webui/
-    app.py, templates/, static/    Flask settings UI (device name, Wi-Fi, TV timeout, hostname, reboot)
+    app.py, templates/, static/    Flask UI: settings (device name, Wi-Fi, TV timeout, hostname), now playing,
+                                   Diagnostics (kiosk + service logs, log level, update from GitHub, reinstall the
+                                   root helper), standby toggle, timezone, settings backup/restore, reboot
+    install-privileged.sh          installs/updates the root helper below, which deliberately lives outside this checkout
     airplaymatrix-privileged.py     the one root-owned script the web UI is allowed to invoke via sudo
     airplaymatrix-webui.service, airplaymatrix-webui.sudoers
   app/
@@ -163,6 +173,8 @@ Software/
   app_qt5/
     sync_controller.py            optional "lyric sync on connect": mutes the receiver at the start of a
                                     session until metadata/lyrics land, restarts the track, then unmutes
+    status_writer.py              publishes what's on screen to runtime_state.py so the web UI can show it --
+                                    the metadata FIFO has a single reader and this app is it
     main.py, app_controller.py, *_controller.py, qml/   the Qt5/PySide2 port of the same app (Pi Zero WH build) --
       settings_controller.py exposes display_settings.py's toggles to QML; lyrics/song-details visibility and
       LyricsController's fetching both gate on them
@@ -232,6 +244,25 @@ docs/
   of the first song for lyrics that are in step for the rest of it. The
   restart is a best-effort MPRIS `Seek` back to the start, which depends on
   the sender honouring it.
+- The web UI is meant to remove reasons to open a terminal: the Diagnostics
+  page carries the display app's log (captured by the launcher to
+  `~/.local/state/airplaymatrix/kiosk.log` -- the autostart otherwise gives
+  its output nowhere to go), shairport-sync's and the web UI's journals, an
+  INFO/DEBUG switch, and a `git pull --ff-only` update button. An update
+  only changes files on disk: the running app and the root helper each need
+  their own explicit step, the helper because it lives outside this checkout
+  on purpose, so that being able to write the repo is not the same as being
+  able to change what runs as root.
+- The kiosk tty's login banner is suppressed with `~/.hushlogin` (setup.sh
+  creates it for kiosk installs). Without it an autologin shell prints the
+  motd -- Debian's licence paragraph, a uname line, the Pi's usb-gadget
+  notice -- as a screenful of text between the boot placeholder and the app
+  appearing. SSH sessions are unaffected, since the motd itself is untouched.
+- Kiosk startup is ~6.7s from launch to the app being up on the Zero WH, of
+  which PySide2 alone is ~2.8s and Qt scene-graph setup most of the rest.
+  The imports worth deferring have been deferred (urllib, Pillow, pyserial);
+  what's left is close to the floor for Python/Qt on a 1GHz ARM1176, so the
+  brief black screen at boot is inherent rather than an oversight.
 - The Zero WH kiosk runs on **native Wayland**, not XCB. It used to go
   through Xwayland, which cost a whole extra X server -- 54MB resident on a
   426MB machine, more than the app itself -- and a second full-screen
