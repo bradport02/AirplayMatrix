@@ -151,6 +151,21 @@ Item {
             transformOrigin: Item.TopLeft
             scale: root.blurDownscale
 
+            // Flatten the stage into a single texture before it is scaled
+            // up. Without this, `scale` reduces nothing that costs anything:
+            // a scaled Rectangle still writes every one of its on-screen
+            // pixels, so the blur and the scrim below were two separate
+            // full-screen blends per frame regardless of the stage size.
+            // Only FastBlur got cheaper, because it renders into its own
+            // buffer at the item's size.
+            //
+            // Layered, the blur and the scrim composite together at
+            // 480x270 and reach the screen as one textured quad -- which is
+            // what actually removes a full-screen blend from every frame of
+            // a transition, when the backdrop is redrawing continuously.
+            layer.enabled: true
+            layer.smooth: true
+
             Item {
                 id: backdropSource
                 anchors.fill: parent
@@ -205,24 +220,26 @@ Item {
                 color: "black"
                 opacity: 0.35
             }
-    }
 
-    // Vignette so the top/bottom bars read clearly over artwork -- only
-    // relevant once there's actually a session's worth of content behind
-    // it. Idle is meant to be flat black with nothing layered over it at
-    // all, so this stays fully off there rather than leaving a faint
-    // light/dark/light banding across a background that's supposed to
-    // read as one plain colour.
-    Rectangle {
-        anchors.fill: parent
-        opacity: app.track.sessionActive ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: Theme.durationSlow } }
-        gradient: Gradient {
-            orientation: Gradient.Vertical
-            GradientStop { position: 0.0; color: Qt.rgba(0, 0, 0, 0.35) }
-            GradientStop { position: 0.18; color: Qt.rgba(0, 0, 0, 0) }
-            GradientStop { position: 0.82; color: Qt.rgba(0, 0, 0, 0) }
-            GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.45) }
+            // Vignette so the top/bottom bars read clearly over artwork.
+            // Inside the layer with everything else, so it composites at
+            // stage resolution and costs nothing extra on screen rather
+            // than being a second full-screen gradient blend every frame.
+            //
+            // It also no longer needs its own sessionActive binding: it
+            // lives with the artwork now, and artwork is the only thing it
+            // was ever meant to darken. The idle screen stays flat, which
+            // is what it always wanted to be.
+            Rectangle {
+                anchors.fill: parent
+                gradient: Gradient {
+                    orientation: Gradient.Vertical
+                    GradientStop { position: 0.0; color: Qt.rgba(0, 0, 0, 0.35) }
+                    GradientStop { position: 0.18; color: Qt.rgba(0, 0, 0, 0) }
+                    GradientStop { position: 0.82; color: Qt.rgba(0, 0, 0, 0) }
+                    GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.45) }
+                }
+            }
         }
     }
 }
