@@ -228,28 +228,27 @@
   <h2>{{ icon('chip') }} Timezone</h2>
   <p class="muted">
     The desk display shows a clock, so a wrong timezone is visible on the wall.
-    Currently <strong>{{ timezone or 'unknown' }}</strong>. Use a standard name such as
-    <code>Europe/London</code>.
+    Currently <strong>{{ timezone or 'unknown' }}</strong>.
   </p>
   <form method="post" action="{{ url_for('set_timezone') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="text" name="zone" value="{{ timezone }}" placeholder="Europe/London">
+    <select name="zone" required>
+      {# Only reachable when /etc/timezone is unreadable. `required` plus an
+         empty disabled option keeps Save from firing until something is
+         picked, rather than letting whatever sorts first go through as if
+         it had been chosen. #}
+      {% if not timezone %}
+      <option value="" selected disabled>Choose a timezone&hellip;</option>
+      {% endif %}
+      {% for group, zones in timezones %}
+      <optgroup label="{{ group }}">
+        {% for zone in zones %}
+        <option value="{{ zone }}" {{ 'selected' if zone == timezone else '' }}>{{ zone }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+    </select>
     <button type="submit" class="primary">Save</button>
-  </form>
-
-  <h2>{{ icon('refresh') }} Settings backup</h2>
-  <p class="muted">
-    Downloads the display settings on this page as JSON. Deliberately not this app's own config —
-    that holds the admin password hash and session secret, which have no business in a backup file.
-  </p>
-  <div class="button-row">
-    <a class="button" href="{{ url_for('export_settings') }}">{{ icon('text') }} Download settings</a>
-  </div>
-  <form method="post" action="{{ url_for('import_settings') }}" enctype="multipart/form-data"
-        onsubmit="return confirm('Restore settings from this file?\n\nCurrent display settings will be overwritten.');">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="file" name="settings" accept="application/json,.json">
-    <button type="submit">Restore</button>
   </form>
 
   <h2>Advanced</h2>

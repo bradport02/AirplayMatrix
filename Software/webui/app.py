@@ -23,6 +23,7 @@ import secrets
 import subprocess
 import sys
 import time
+import zoneinfo
 from pathlib import Path
 
 from flask import Flask, flash, g, redirect, render_template, request, session, url_for
@@ -339,6 +340,7 @@ def saved_wifi_connections() -> list[str]:
 @app.route("/")
 def dashboard():
     sp = read_shairport_settings()
+    tz = current_timezone()
     return render_template(
         "dashboard.html",
         airplay_name=sp["airplay_name"],
@@ -350,7 +352,8 @@ def dashboard():
         led=led_status(),
         display=display_settings.load(),
         np=now_playing(),
-        timezone=current_timezone(),
+        timezone=tz,
+        timezones=timezone_choices(tz),
     )
 
 
@@ -524,6 +527,44 @@ def current_timezone() -> str:
         return ""
 
 
+def timezone_choices(current: str) -> list[tuple[str, list[str]]]:
+    """The timezone dropdown's contents: zones grouped by region prefix
+    ("Europe/London" under "Europe"), regions and zones alphabetical.
+
+    Read from zoneinfo rather than `timedatectl list-timezones` so building
+    the dashboard doesn't wait on another subprocess -- the two agree on
+    this system apart from "localtime", which is dropped below. The one
+    thing that must stay true is that everything offered here survives
+    cmd_set_timezone()'s validation, which *is* timedatectl's list.
+
+    Grouping is purely for the human: ~480 zones in one flat list is a
+    miserable scroll, and the region is the first thing anyone narrows by.
+
+    `current` is put back at the top as a group of its own when the system
+    no longer knows it -- an /etc/timezone written by an older tzdata (the
+    "backward" links like US/Eastern aren't shipped here any more) must
+    still render as the selected value and stay replaceable, rather than
+    silently showing whatever happens to sort first as if it were live.
+    """
+    # zoneinfo reports /etc/localtime -- the symlink that names the current
+    # zone, not a zone in its own right -- as "localtime". timedatectl has
+    # no such name, so offering it would only ever fail on save.
+    zones = sorted(zoneinfo.available_timezones() - {"localtime"})
+
+    groups: dict[str, list[str]] = {}
+    for zone in zones:
+        # UTC/GMT/Factory have no prefix to group by.
+        region = zone.split("/", 1)[0] if "/" in zone else "Other"
+        groups.setdefault(region, []).append(zone)
+
+    choices = [(region, groups[region]) for region in sorted(groups) if region != "Other"]
+    if "Other" in groups:
+        choices.append(("Other", groups["Other"]))
+    if current and current not in zones:
+        choices.insert(0, ("Currently set", [current]))
+    return choices
+
+
 def now_playing() -> dict:
     """What the kiosk app last said it was showing.
 
@@ -651,48 +692,6 @@ def set_timezone():
         return redirect(url_for("dashboard"))
     ok, out = run_privileged("set-timezone", zone)
     flash(f"Timezone set to {zone}." if ok else f"Failed: {out}", "ok" if ok else "error")
-    return redirect(url_for("dashboard"))
-
-
-@app.route("/settings/export")
-def export_settings():
-    """Download the display settings as JSON.
-
-    Deliberately only display_settings: this app's own config.json holds the
-    session secret and the admin password hash, which have no business in a
-    file that gets emailed to oneself as a backup.
-    """
-    payload = json.dumps(display_settings.load(), indent=2) + "\n"
-    return app.response_class(
-        payload,
-        mimetype="application/json",
-        headers={"Content-Disposition": "attachment; filename=airplaymatrix-display-settings.json"},
-    )
-
-
-@app.route("/settings/import", methods=["POST"])
-def import_settings():
-    upload = request.files.get("settings")
-    if upload is None or not upload.filename:
-        flash("No file chosen.", "error")
-        return redirect(url_for("dashboard"))
-    try:
-        incoming = json.loads(upload.read().decode("utf-8"))
-        if not isinstance(incoming, dict):
-            raise ValueError("not a JSON object")
-    except (ValueError, UnicodeDecodeError) as exc:
-        flash(f"Not a valid settings file: {exc}", "error")
-        return redirect(url_for("dashboard"))
-
-    # Merge over the current settings and re-run them through load()'s
-    # validation by saving and reloading, so a hand-edited or older file
-    # can't introduce a key or type the app doesn't expect.
-    merged = {**display_settings.load(), **{
-        k: v for k, v in incoming.items() if k in display_settings.DEFAULTS
-    }}
-    display_settings.save(merged)  # type: ignore[arg-type]
-    restored = display_settings.load()
-    flash(f"Settings restored ({len(incoming)} keys read, {len(restored)} applied).", "ok")
     return redirect(url_for("dashboard"))
 
 

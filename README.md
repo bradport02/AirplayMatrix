@@ -164,7 +164,7 @@ Software/
   webui/
     app.py, templates/, static/    Flask UI: settings (device name, Wi-Fi, TV timeout, hostname), now playing,
                                    Diagnostics (kiosk + service logs, log level, update from GitHub, reinstall the
-                                   root helper), standby toggle, timezone, settings backup/restore, reboot
+                                   root helper), standby toggle, timezone, reboot
     install-privileged.sh          installs/updates the root helper below, which deliberately lives outside this checkout
     airplaymatrix-privileged.py     the one root-owned script the web UI is allowed to invoke via sudo
     airplaymatrix-webui.service, airplaymatrix-webui.sudoers
