@@ -16,7 +16,12 @@ Item {
     // contentReady as well as sessionActive: a session opens before there
     // is any track to describe, and a scrub bar for a track the screen
     // isn't showing yet is just a stale bar. Matches NowPlayingView.
-    opacity: (app.track.sessionActive && app.track.contentReady) ? 1 : 0
+    //
+    // Standby leads for the same reason it does in Main.qml's showTrack: a
+    // progress bar advancing under "Standby Mode." during the second or so
+    // the ended session takes to be noticed would read as the device still
+    // playing something.
+    opacity: (!app.standby && app.track.sessionActive && app.track.contentReady) ? 1 : 0
     visible: opacity > 0
     Behavior on opacity { NumberAnimation { duration: Theme.durationSlow } }
 

@@ -98,10 +98,16 @@ Item {
     // screen and filled it in field by field. Now this screen holds, then
     // cross-fades against the panel below once there's a complete track to
     // show.
+    //
+    // Standby takes it away entirely rather than the two sharing the screen:
+    // "Waiting for connection" and "please re-enable the device" are
+    // contradictory advice, and the whole point of the standby screen is
+    // that a viewer who turns the TV back on is told exactly one thing.
     ColumnLayout {
         id: idleScreen
         anchors.centerIn: parent
-        opacity: (app.track.sessionActive && app.track.contentReady) ? 0 : 1
+        opacity: (app.standby
+                  || (app.track.sessionActive && app.track.contentReady)) ? 0 : 1
         visible: opacity > 0
         spacing: Theme.spacingXs
 
@@ -154,6 +160,68 @@ Item {
         }
     }
 
+    // Standby state -- the receiver has been switched off from the web UI's
+    // power button, so there is no AirPlay to wait for and the idle screen
+    // above would be quietly lying. See AppController._read_standby for how
+    // that is detected (a systemd enablement symlink, deliberately not the
+    // metadata pipe's connection state) and why it reports only a *chosen*
+    // standby, never a crash.
+    //
+    // This screen is the one that can stay up longest of anything the app
+    // draws -- indefinitely, by design, and with no timer to take it away.
+    // Stopping the receiver runs shairport-sync's exit hook, so the TV is
+    // already heading into CEC standby (cec/airplay-tv-power.sh) and this is
+    // not written for someone watching it happen: it is written for whoever
+    // switches the TV back on hours later and finds AirPlay missing. That
+    // makes it the strictest case for the idle screen's own rule -- nothing
+    // that animates, no gradient, no layer, nothing derived from artwork.
+    // Two static Text nodes in one batch, and `visible: opacity > 0` means
+    // that while the receiver is on this whole subtree is skipped by the
+    // scene graph rather than drawn transparently. The single fade is a
+    // one-shot Behavior that runs when the state changes and then stops,
+    // which is the same deal the idle screen has always had.
+    //
+    // The idle screen puts its small secondary line above its large primary
+    // one; this inverts that order because the emphasis genuinely inverts.
+    // "Standby Mode." is the answer to the question the viewer is actually
+    // asking, and the instruction under it is the follow-up -- reading them
+    // the other way round leads with a demand before saying what happened.
+    // Every token is the idle screen's, unchanged, so the two read as the
+    // same screen in two states rather than as two designs.
+    ColumnLayout {
+        id: standbyScreen
+        anchors.centerIn: parent
+        opacity: app.standby ? 1 : 0
+        visible: opacity > 0
+        spacing: Theme.spacingXs
+
+        Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.InOutQuad } }
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
+            text: "Standby Mode."
+            color: Theme.colorTextPrimary
+            font.family: Theme.fontFamily
+            font.pixelSize: 20 * Theme.uiScale
+            font.weight: Font.Medium
+        }
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
+            // Deliberately not "re-enable it from the web UI at
+            // <address>": this app has no reliable way to know the address
+            // it would be printing (the Pi may have several, and the one
+            // that works depends on which network the reader is on), and a
+            // wrong URL on a screen whose entire job is to unstick someone
+            // is worse than no URL. Whoever put the device into standby
+            // used the web UI to do it and can find it again.
+            text: "Please re-enable the device."
+            color: Theme.colorTextSecondary
+            font.family: Theme.fontFamily
+            font.pixelSize: 14 * Theme.uiScale
+        }
+    }
+
     // Now-playing state: artwork on the left, details/lyrics on the right.
     // The artwork sizes off the row's actual available height (already a
     // live reflection of the window size) rather than a fixed pixel cap, so
@@ -183,6 +251,17 @@ Item {
         // Guarded on trackChanging: opacity also passes through 0 at the
         // *start* of a fade back in, and reporting a fade-out there would
         // be a lie.
+        //
+        // Standby is now a second way for this to reach 0 without a track
+        // change having finished, and it is deliberately left to report
+        // anyway. A standby landing mid-transition genuinely has taken the
+        // outgoing track off screen, which is all this claims;
+        // TrackController.fadeOutComplete is idempotent and no-ops when
+        // nothing is in flight, and on a same-album change -- where
+        // root.songOpacity owns the handshake -- the worst case is the
+        // swap being reported twice, which it already tolerates. Suppressing
+        // it here would just make the controller sit out FADE_OUT_GRACE_MS
+        // before reaching the same conclusion.
         onOpacityChanged: if (opacity <= 0 && app.track.trackChanging) app.track.fadeOutComplete()
 
         AlbumArt {

@@ -12,6 +12,7 @@ Software/display_settings.py's docstring for why).
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import platform
 from typing import Callable
@@ -36,6 +37,37 @@ TV_POWER_SCRIPT = "/usr/local/bin/airplay-tv-power.sh"
 
 RECEIVER_POLL_MS = 1000
 
+# Standby detection. The web UI's power button is *not* a shutdown: it runs
+# `systemctl disable --now shairport-sync` (webui/airplaymatrix-privileged.py
+# cmd_soft_power), so the Pi, this app and the display all keep running while
+# the AirPlay receiver stops. Without something to say so, the screen falls
+# back to the ordinary idle "Waiting for connection" and gives no clue why a
+# phone can no longer find the device.
+#
+# `disable` is exactly the removal of this symlink, which is what makes a
+# plain existence test equivalent to `systemctl is-enabled` -- for a fraction
+# of the cost. Spawning a systemctl per poll on the Zero WH's single ARM1176
+# core is a fork+exec+D-Bus round trip against shairport-sync's real-time
+# audio path; a stat of a path whose dentry is permanently cache-hot is not
+# measurable next to it. (Ordinary `systemctl stop`, a crash, and a restart
+# all leave the link in place, which is the point: this reports *deliberate*
+# standby only. "Please re-enable the device" after a crash would send the
+# viewer to a web UI toggle that is already switched on.)
+#
+# Two dead ends that are worth not rediscovering:
+#   * TrackController.bridgeConnected is NOT this signal. Verified on the
+#     device: shairport-sync does not hold the metadata FIFO open while
+#     merely idle -- with no phone connected there are zero writer fds on
+#     /tmp/shairport-sync-metadata. "No writer" is the *normal* idle state,
+#     so keying off it would put the standby message on screen essentially
+#     all the time.
+#   * ReceiverSupervisor.is_running is not it either: on the Pi that is
+#     NullSupervisor, which hardcodes True because systemd owns the process
+#     (see receiver.py). It describes who is responsible for the receiver,
+#     not whether the receiver is wanted.
+STANDBY_WANTS_DIR = "/etc/systemd/system/multi-user.target.wants"
+STANDBY_LINK = STANDBY_WANTS_DIR + "/shairport-sync.service"
+
 
 def _default_source_factory() -> Callable[[], MetadataSource]:
     # Windows has no native shairport-sync; it runs in WSL2 and sps_bridge.py
@@ -57,6 +89,7 @@ def _default_supervisor() -> ReceiverSupervisor:
 class AppController(QObject):
     receiverRunningChanged = Signal()
     deviceNameChanged = Signal()
+    standbyChanged = Signal()
 
     def __init__(
         self,
@@ -69,6 +102,12 @@ class AppController(QObject):
         self._receiver_running = False
         self._device_name_mtime = airplay_name.mtime()
         self._device_name = airplay_name.read()
+        # Read before the first paint rather than left False for the first
+        # poll to correct: booting with the receiver already in standby is
+        # the normal way to be in standby (cmd_soft_power passes --now *and*
+        # persists), so the very first frame has to be right. A signal
+        # emitted from here would land before QML exists to hear it.
+        self._standby = self._read_standby()
 
         self._settings = SettingsController(self)
         self._track = TrackController(source_factory or _default_source_factory(), self)
@@ -119,11 +158,51 @@ class AppController(QObject):
         except OSError as exc:
             LOG.debug("could not run %s wake: %s", TV_POWER_SCRIPT, exc)
 
+    @staticmethod
+    def _read_standby() -> bool:
+        """Whether the receiver has been deliberately switched off.
+
+        lexists, not exists: the question is whether the enablement symlink
+        is there, not whether whatever it points at is. The two differ on a
+        half-removed install, where exists() would report standby for a
+        receiver nobody switched off.
+
+        The directory check is the "is this even a systemd host?" guard, and
+        it is second on purpose: enabled is the overwhelmingly common state
+        and costs a single stat, while the extra one is only paid in the
+        rare case where we are about to claim standby. Without it, the
+        Windows/WSL host in _default_supervisor() -- where this path cannot
+        exist -- would sit permanently on the standby screen, and so would
+        any container built without systemd. Not being able to tell has to
+        read as "not in standby": the idle screen is merely uninformative
+        there, where a wrong standby screen is actively misleading.
+        """
+        if os.path.lexists(STANDBY_LINK):
+            return False
+        return os.path.isdir(STANDBY_WANTS_DIR)
+
     def _poll_receiver(self) -> None:
         running = self._supervisor.is_running
         if running != self._receiver_running:
             self._receiver_running = running
             self.receiverRunningChanged.emit()
+
+        # Standby rides this tick too, for the same reason the device-name
+        # stat below does. The interval is 1s not because standby needs
+        # noticing within a second -- it is a rare, deliberate, human act,
+        # and the TV is on its way into CEC standby anyway (shairport-sync's
+        # exit hook fires airplay-tv-power.sh) so nobody is watching the
+        # moment it happens -- but because the thing that actually costs
+        # anything here is waking the GUI thread up, and this timer is
+        # already awake. A dedicated QTimer at a politely slow 30s would add
+        # wakeups to remove stats, which is the wrong trade on this
+        # hardware; deferring to every Nth tick would add state to save a
+        # cache-hot stat. So: no new timer, no counter, one stat.
+        standby = self._read_standby()
+        if standby != self._standby:
+            self._standby = standby
+            LOG.info("receiver standby -> %s", standby)
+            self.standbyChanged.emit()
 
         # Piggybacks on this same 1s tick rather than a timer of its own --
         # a rename is rare and this is just a stat() until it happens (see
@@ -142,6 +221,9 @@ class AppController(QObject):
     def _get_device_name(self) -> str:
         return self._device_name
 
+    def _get_standby(self) -> bool:
+        return self._standby
+
     def _get_track(self) -> TrackController:
         return self._track
 
@@ -156,6 +238,11 @@ class AppController(QObject):
 
     receiverRunning = Property(bool, _get_receiver_running, notify=receiverRunningChanged)
     deviceName = Property(str, _get_device_name, notify=deviceNameChanged)
+    # Read straight off `app` by Main.qml, NowPlayingView.qml and
+    # PlaybackBar.qml -- it outranks every track-derived state on screen, so
+    # it is deliberately not tucked inside TrackController where it would
+    # look like one more thing the metadata stream reports.
+    standby = Property(bool, _get_standby, notify=standbyChanged)
     track = Property(QObject, _get_track, constant=True)
     lyrics = Property(QObject, _get_lyrics, constant=True)
     matrix = Property(QObject, _get_matrix, constant=True)
