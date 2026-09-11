@@ -27,6 +27,58 @@ QtObject {
     // by hand to pick between them.
     readonly property color colorTextPrimaryOnLight: "#15151A"
     readonly property color colorTextSecondaryOnLight: "#4A4A54"
+
+    // The artist/album line under the now-playing title, and *only* that --
+    // deliberately its own pair rather than reusing colorTextSecondary.
+    //
+    // textIsDark picks its light/dark polarity by comparing the two primary
+    // inks above against the artwork (encoder.legible_text_is_dark mirrors
+    // those two hex values, not these), so the secondary pair was never the
+    // colour that decision was actually validated for -- and it is a good
+    // deal dimmer. Running the same maths over every grey backdrop, with
+    // Background.qml's 0.35 scrim folded in: the primary pair never drops
+    // below 4.1:1, while colorTextSecondary bottoms out at 1.6:1 around a
+    // mid-bright cover. 1.6:1 is not "a bit hard to read", it is text the
+    // same brightness as what is behind it, which is exactly the report
+    // this pair was changed for. These two hold about 3.3:1 at that same
+    // worst point.
+    //
+    // They sit close to the primary inks on purpose. The hierarchy between
+    // the title and this line is carried by 28px Bold against 16px Regular,
+    // which is plenty; spending it on brightness as well is what cost the
+    // line its legibility. LyricsPanel keeps the original secondary pair --
+    // its sung/pending distinction is genuinely a colour signal and is read
+    // against a known neighbour rather than against arbitrary artwork.
+    readonly property color colorTextDetail: "#DCDCE4"
+    readonly property color colorTextDetailOnLight: "#26262F"
+
+    // Glyph outline (Text.style/styleColor) for the now-playing text over
+    // artwork, in whichever ink textIsDark did *not* choose.
+    //
+    // Colour alone cannot finish the job, because the polarity it is chosen
+    // with can be wrong in the first place: legible_text_is_dark averages
+    // the whole cover into one colour, but the text sits over the right-hand
+    // side of a blurred, aspect-cropped copy of it. A cover that averages
+    // bright but is dark where the text lands gets dark ink on a dark
+    // backdrop -- about 1.2:1, i.e. invisible -- and no choice of ink value
+    // fixes a wrong choice of ink. An outline does, by putting a hard edge
+    // of the opposite ink around every glyph, so one of the two always
+    // contrasts with whatever is actually behind it.
+    //
+    // Costs one node and one texture sample, not a pass: Text.Outline is
+    // drawn by the distance-field glyph material itself, so it stays a
+    // single batch of the same quads. The DropShadow/layer.enabled route
+    // would allocate a render target per line and re-render it on every
+    // frame of a scroll, which is the category of cost AlbumArt.qml and
+    // Background.qml both document going out of their way to avoid.
+    //
+    // Alpha rather than the flat ink so it reads as a halo firming the
+    // letters up, not as outlined lettering; over the common dark backdrop
+    // it is close to invisible and only asserts itself where the artwork
+    // comes up to meet the text.
+    readonly property color colorTextHalo: Qt.rgba(0, 0, 0, 0.62)
+    readonly property color colorTextHaloOnLight: Qt.rgba(1, 1, 1, 0.62)
+
     readonly property color colorAccent: "#0A84FF"
 
     readonly property color colorStatusGreen: "#32D74B"

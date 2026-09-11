@@ -255,15 +255,33 @@ Item {
                 spacing: Theme.spacingXs
                 visible: app.settings.showDetails
 
-                Text {
+                // Both lines scroll rather than elide when they don't fit --
+                // see MarqueeText.qml, which is where all the "only when it
+                // actually overflows" care lives. The title gets the same
+                // treatment as the album line the request was about, for
+                // two reasons: it elides today too, so it loses information
+                // in the identical way, and at 28px Bold in the same column
+                // it is the *more* likely of the two to run out of room. A
+                // display where the album name scrolls and the song title
+                // silently stops at an ellipsis would read as a bug rather
+                // than as a choice. Both are still free when they fit, and
+                // two scrolling lines cost barely more per frame than one,
+                // since what a running animation actually buys is a
+                // full-screen recomposite and that is paid once.
+                //
+                // Both also carry a glyph outline in the opposite ink, which
+                // is what makes them survive artwork that textIsDark reads
+                // wrong -- Theme.colorTextHalo has the reasoning.
+                MarqueeText {
                     text: app.track.title || "—"
                     // Swaps to dark ink over light album art -- see
                     // TrackController.textIsDark / encoder.legible_text_is_dark.
                     color: app.track.textIsDark ? Theme.colorTextPrimaryOnLight : Theme.colorTextPrimary
+                    style: Text.Outline
+                    styleColor: app.track.textIsDark ? Theme.colorTextHaloOnLight : Theme.colorTextHalo
                     font.family: Theme.fontFamily
                     font.pixelSize: 28 * Theme.uiScale
                     font.weight: Font.Bold
-                    elide: Text.ElideRight
                     Layout.fillWidth: true
                     // The song title is one of the two things that changes
                     // between tracks on one album, so it is one of the two
@@ -273,18 +291,32 @@ Item {
                     // must not reflow around a title that is on its way out.
                     opacity: root.songOpacity
                 }
-                Text {
+                MarqueeText {
                     // Deliberately has no fade of its own. On a same-album
                     // change this is the line that proves the point: artist
                     // and album are both unchanged, so the binding doesn't
                     // even re-evaluate (TrackController._publish only emits
                     // artistChanged/albumChanged when the value actually
                     // moves) and the text simply stays on screen, untouched.
+                    //
+                    // The scroll has to keep that promise too, and it does
+                    // by being driven off nothing but this string: an
+                    // unchanged text means no rewind, and the line carries
+                    // on mid-pass across the track change instead of
+                    // snapping back to the start. Its other two gates,
+                    // `visible` and the column width, are equally still on
+                    // a same-album change -- Main.qml holds showTrack true
+                    // through one, so the panel never goes invisible and
+                    // nothing relayouts. See MarqueeText.qml's onTextChanged.
                     text: [app.track.artist, app.track.album].filter(function (s) { return s.length > 0 }).join(" — ")
-                    color: app.track.textIsDark ? Theme.colorTextSecondaryOnLight : Theme.colorTextSecondary
+                    // Its own ink pair, not colorTextSecondary -- that one
+                    // was the specific thing disappearing into bright
+                    // covers. See Theme.colorTextDetail.
+                    color: app.track.textIsDark ? Theme.colorTextDetailOnLight : Theme.colorTextDetail
+                    style: Text.Outline
+                    styleColor: app.track.textIsDark ? Theme.colorTextHaloOnLight : Theme.colorTextHalo
                     font.family: Theme.fontFamily
                     font.pixelSize: 16 * Theme.uiScale
-                    elide: Text.ElideRight
                     Layout.fillWidth: true
                     visible: text.length > 0
                 }
