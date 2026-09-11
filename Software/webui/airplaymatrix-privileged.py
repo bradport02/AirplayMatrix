@@ -104,6 +104,73 @@ def cmd_set_tv_timeout(args: argparse.Namespace) -> None:
     print("OK")
 
 
+def cmd_set_connect_volume(args: argparse.Namespace) -> None:
+    """Set the AirPlay volume a new session starts at.
+
+    This is shairport-sync's own `default_airplay_volume`, offered to the
+    sender during session setup, and it is the only thing that actually
+    moves the phone's volume slider. Two earlier approaches did not, and
+    both are worth not retrying:
+
+      * Writing the volume over D-Bus once a session is running. On the 5.x
+        development build nothing can set the AirPlay volume from the
+        receiver side -- measured mid-playback, RemoteControl.AirplayVolume
+        (property), RemoteControl.SetAirplayVolume and
+        AdvancedRemoteControl.SetVolume all accept the call, return success
+        and change nothing, with RemoteControl.Available reading false even
+        mid-song. The property reads the slider correctly; it cannot move
+        it. Setup is the one moment the sender will be told a volume.
+
+      * Setting the ALSA mixer. That does change loudness, but it is the
+        wrong knob: it attenuates this device's output while the phone's
+        slider stays put, so a phone connecting at 30% still shows 30%.
+
+    Deliberately the only writer of this value, for the same reason. If
+    anything else also attenuated from the same percentage, 60% would mean
+    -12dB twice over.
+    """
+    try:
+        percent = int(args.percent)
+    except ValueError:
+        fail("volume must be a whole number")
+    if not (0 <= percent <= 100):
+        fail("volume must be between 0 and 100")
+
+    # AirPlay's own scale, the same mapping the rest of the project uses.
+    # shairport-sync wants a decimal point on this setting, so never "%d".
+    db = -30.0 + (percent / 100.0) * 30.0
+
+    text = SHAIRPORT_CONF.read_text()
+    new_text, n = re.subn(
+        r"(^[ \t]*default_airplay_volume\s*=\s*)-?[0-9.]+(\s*;)",
+        rf"\g<1>{db:.1f}\g<2>",
+        text,
+        count=1,
+        flags=re.M,
+    )
+    if n == 0:
+        # Not present: add it to the general block rather than failing, so
+        # this works against a config written before the setting existed.
+        new_text, n = re.subn(
+            r"(^general\s*=\s*\{)",
+            rf"\g<1>\n  default_airplay_volume = {db:.1f};",
+            text,
+            count=1,
+            flags=re.M,
+        )
+        if n == 0:
+            fail(f"no general block to add default_airplay_volume to in {SHAIRPORT_CONF}")
+    atomic_write(SHAIRPORT_CONF, new_text)
+
+    # Only read at startup, so this costs a restart -- and with it any
+    # session in progress. That is the trade for the setting meaning
+    # anything at all; nothing can change it on a live session.
+    r = run(["systemctl", "restart", "shairport-sync"])
+    if r.returncode != 0:
+        fail(f"volume updated but restart failed: {r.stderr.strip()}")
+    print("OK")
+
+
 # -- hostname -----------------------------------------------------------------
 
 def cmd_set_hostname(args: argparse.Namespace) -> None:
@@ -375,6 +442,10 @@ def main() -> int:
     p = sub.add_parser("set-tv-timeout")
     p.add_argument("seconds")
     p.set_defaults(func=cmd_set_tv_timeout)
+
+    p = sub.add_parser("set-connect-volume")
+    p.add_argument("percent")
+    p.set_defaults(func=cmd_set_connect_volume)
 
     p = sub.add_parser("set-hostname")
     p.add_argument("name")

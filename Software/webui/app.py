@@ -463,17 +463,37 @@ def set_lyrics_offset():
 
 @app.route("/settings/connect-volume", methods=["POST"])
 def set_connect_volume():
-    # Read by cec/airplay-tv-power.sh (as the shairport-sync user, on every
-    # new AirPlay connection), not either kiosk app -- see
-    # display_settings.py's docstring.
+    # Applied by writing shairport-sync's own `default_airplay_volume`, which
+    # it offers the sender during session setup -- the only thing that
+    # actually moves the phone's slider (see the helper's
+    # cmd_set_connect_volume for the two approaches that didn't). That lives
+    # in /etc, hence the privileged helper, and it is only read at startup,
+    # so saving restarts the receiver.
+    #
+    # It is still mirrored into display_settings because the web UI renders
+    # the field from there, but nothing reads that copy to apply the volume
+    # any more.
     raw = request.form.get("percent", "").strip()
     try:
         percent = int(raw)
     except ValueError:
         flash(f"\"{raw}\" isn't a whole number.", "error")
         return redirect(url_for("dashboard"))
+    if not (0 <= percent <= 100):
+        flash("Volume must be between 0 and 100.", "error")
+        return redirect(url_for("dashboard"))
+
+    ok, out = run_privileged("set-connect-volume", str(percent))
+    if not ok:
+        flash(f"Couldn't set the connect volume: {out}", "error")
+        return redirect(url_for("dashboard"))
+
     settings = display_settings.set_connect_volume_percent(percent)
-    flash(f"AirPlay will connect at {settings['connect_volume_percent']}% volume.", "ok")
+    flash(
+        f"New AirPlay sessions will start at {settings['connect_volume_percent']}% "
+        "volume. The receiver was restarted, so any session in progress has ended.",
+        "ok",
+    )
     return redirect(url_for("dashboard"))
 
 

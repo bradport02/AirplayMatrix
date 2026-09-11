@@ -2,6 +2,22 @@
 // /etc/shairport-sync.conf.orig.
 general = {
   name = "AirplayMatrix";
+  // Where a new AirPlay session's volume starts, on AirPlay's own -30.0dB
+  // (silent) to 0.0dB (loudest) scale. Neither Pi has a physical volume
+  // control, so without this a phone connects at whatever level it last
+  // remembered somewhere else -- often very quiet.
+  //
+  // Written by the web UI's "AirPlay connect volume" card, via
+  // airplaymatrix-privileged.py's set-connect-volume, which maps 0-100%
+  // onto this range. -7.5 is 75%. Keep the decimal point: shairport-sync
+  // rejects this setting without one.
+  //
+  // This is the ONLY thing that moves the phone's own volume slider. It is
+  // offered to the sender during session setup, which is the one moment the
+  // sender accepts being told a volume -- writing the volume over D-Bus
+  // mid-session does nothing on this build, and attenuating locally (ALSA
+  // mixer) changes loudness without moving the slider. Both were tried.
+  default_airplay_volume = -7.5;
   // Placeholder until a USB DAC is attached — the Pi 5 has no analog
   // audio out. Swap output_device below once one is plugged in
   // (check `aplay -l` for its card name).

@@ -52,23 +52,6 @@ for entry in "${SCRIPTS[@]}"; do
   install -o root -g root -m "$mode" "$src" "$dest"
 done
 
-# airplay-tv-power.sh runs as the `shairport-sync` user and reads the web
-# UI's connect-volume setting out of the checkout owner's ~/.config. Recent
-# Raspberry Pi OS creates home directories 0700, which blocks that at the
-# parent directory even though config.json itself is world-readable -- so
-# the script silently fell back to its built-in default and the web UI's
-# "AirPlay connect volume" setting did nothing. Done here as well as in
-# setup.sh so the web UI's "Reinstall root helper" button is enough to
-# repair an existing install, without anyone needing an SSH session.
-#
-# o+x is traversal only: other users can reach a known path inside, but
-# still cannot list the home directory.
-owner="$(stat -c %U "$SOFTWARE_DIR")"
-owner_home="$(getent passwd "$owner" | cut -d: -f6)"
-if [[ -n "$owner_home" && -d "$owner_home" ]]; then
-  echo "ensuring $owner_home is traversable (o+x) so the connect volume can be read"
-  chmod o+x "$owner_home"
-fi
 
 echo "restarting the web UI so it picks up any new routes/templates"
 systemctl restart airplaymatrix-webui
