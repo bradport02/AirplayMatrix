@@ -27,6 +27,15 @@ SHAIRPORT_CONF=/etc/shairport-sync.conf
 # shairport-sync.conf), not `airplaymatrix`, so that would resolve to the
 # wrong home directory entirely. No Python dependency either: this is a
 # system-user shell script, and the JSON is simple enough for grep/sed.
+#
+# Reading this at all requires /home/airplaymatrix to be traversable by
+# other users (o+x). Recent Raspberry Pi OS creates home directories 0700,
+# which silently broke this: the file itself is world-readable, but a
+# system user cannot reach it through a 0700 parent, so every session
+# quietly fell back to CONNECT_VOLUME_DEFAULT and the web UI's setting did
+# nothing. The symptom to recognise is the log below reporting a volume
+# the web UI was never set to. setup.sh applies the o+x; if this script is
+# installed by hand, do it there too.
 DISPLAY_SETTINGS=/home/airplaymatrix/.config/airplaymatrix-display/config.json
 CONNECT_VOLUME_DEFAULT=75
 
@@ -71,24 +80,101 @@ connect_volume_percent() {
   printf '%s' "$pct"
 }
 
-# shairport-sync's D-Bus Volume property is AirPlay's native scale: -30.0dB
-# (quietest) to 0.0dB (loudest), linear -- see org.gnome.ShairportSync's
-# introspection. The percent-to-dB mapping here is the same one AirPlay
-# clients themselves use for their volume slider, so 75% here reads the
-# same as if the phone's slider were dragged to 75%. The D-Bus policy
-# (/etc/dbus-1/system.d/shairport-sync-dbus.conf) explicitly allows anyone
-# to invoke methods/set properties on the service, so this needs no special
-# permissions beyond what this script already runs as.
+# AirPlay's native volume scale is -30.0dB (quietest) to 0.0dB (loudest),
+# linear, and the percent-to-dB mapping here is the same one AirPlay clients
+# use for their own slider -- so 75% here reads the same as dragging the
+# phone's slider to 75%. The D-Bus policy
+# (/etc/dbus-1/system.d/shairport-sync-dbus.conf) lets anyone set properties
+# on the service, so no special permissions are needed beyond what this
+# script already runs as.
+#
+# Which property, though, changed under shairport-sync 5.x, and silently.
+# There are now two, on two different interfaces:
+#
+#   org.gnome.ShairportSync              Volume         local output volume,
+#                                                       sitting with
+#                                                       LoudnessEnabled and
+#                                                       ConvolutionGain
+#   org.gnome.ShairportSync.RemoteControl AirplayVolume the AirPlay-scale
+#                                                       volume shared with
+#                                                       the sender
+#
+# This used to set the former, which on 5.x attenuates locally instead of
+# telling the phone anything. RemoteControl is the right one -- and note it
+# is the same interface the TV remote's transport controls go through, so
+# like them it only works on the development build (see
+# cec/upgrade-shairport-dev.sh). The legacy property is kept as a fallback
+# so switching back to the stable build (shairport-build-switch.sh stable)
+# doesn't silently stop setting any volume at all.
+#
+# Everything here is verified by reading the value back, because dbus-send
+# CANNOT be trusted to report this. Setting a property that does not exist
+# on the named interface still exits 0 -- confirmed live -- which is exactly
+# how the wrong property went unnoticed: the old code logged "set connect
+# volume" every single time while doing nothing at all.
+#
+# The read-back is compared with a 1dB tolerance rather than for equality:
+# AirPlay quantises what it is given (a requested -5.00 reads back as
+# -5.25), so an exact match never happens.
 set_connect_volume() {
-  local pct="$1" db
+  local pct="$1" db iface prop
   db=$(awk -v p="$pct" 'BEGIN { printf "%.2f", -30.0 + (p / 100.0) * 30.0 }')
-  if dbus-send --system --dest=org.gnome.ShairportSync /org/gnome/ShairportSync \
-       org.freedesktop.DBus.Properties.Set \
-       string:org.gnome.ShairportSync string:Volume "variant:double:$db" >/dev/null 2>&1; then
-    log "set connect volume to ${pct}% (${db}dB)"
+
+  # Choose the target by *capability*, never by trying one and falling
+  # through on a bad result. The two properties control different things --
+  # one talks to the phone, the other attenuates locally -- so a fallback
+  # triggered by a value mismatch could set both and attenuate twice,
+  # leaving the music quieter than either setting asked for. Whether
+  # AirplayVolume can be read at all is the honest test of which build is
+  # running; whether the write then sticks is a separate question, reported
+  # below but never used to pick a different target.
+  if _read_volume org.gnome.ShairportSync.RemoteControl AirplayVolume >/dev/null; then
+    iface=org.gnome.ShairportSync.RemoteControl
+    prop=AirplayVolume
   else
-    log "failed to set connect volume via D-Bus"
+    iface=org.gnome.ShairportSync
+    prop=Volume
+    log "RemoteControl.AirplayVolume unavailable -- using the legacy Volume property"
   fi
+
+  dbus-send --system --reply-timeout=2000 --dest=org.gnome.ShairportSync \
+    /org/gnome/ShairportSync org.freedesktop.DBus.Properties.Set \
+    "string:$iface" "string:$prop" "variant:double:$db" >/dev/null 2>&1
+
+  # Read back and compare with a 1dB tolerance rather than for equality:
+  # AirPlay quantises what it is given (-5.00 comes back as -5.25).
+  local got
+  got=$(_read_volume "$iface" "$prop")
+  if [[ "$got" =~ ^-?[0-9.]+$ ]] \
+     && awk -v a="$got" -v b="$db" 'BEGIN { exit !((a - b < 1.0) && (b - a < 1.0)) }'; then
+    log "set connect volume to ${pct}% (${db}dB) via ${prop}"
+  else
+    # Worth logging loudly rather than swallowing. AirPlay volume is a
+    # property of a *session*: with none established, every route tested
+    # (the property, RemoteControl.SetAirplayVolume, and
+    # AdvancedRemoteControl.SetVolume) accepts the call, returns success
+    # and changes nothing. If this shows up on every connection, the hook
+    # is firing before the session is ready to be told anything.
+    log "connect volume ${pct}% (${db}dB) did not stick via ${prop} (read back '${got:-nothing}')"
+  fi
+}
+
+# Read one D-Bus double property. Fails if the property is absent on that
+# interface, which is what distinguishes the development build (where
+# RemoteControl carries the AirPlay volume) from the stable one.
+#
+# The read is the only trustworthy half of this exchange: dbus-send exits 0
+# when *setting* a property that does not exist at all -- confirmed live --
+# which is exactly how the wrong property went unnoticed for so long. The
+# old code logged "set connect volume" every time while doing nothing.
+_read_volume() {
+  local got
+  got=$(dbus-send --system --reply-timeout=2000 --print-reply=literal \
+          --dest=org.gnome.ShairportSync /org/gnome/ShairportSync \
+          org.freedesktop.DBus.Properties.Get \
+          "string:$1" "string:$2" 2>/dev/null | awk '{ print $NF }')
+  [[ "$got" =~ ^-?[0-9.]+$ ]] || return 1
+  printf '%s' "$got"
 }
 
 # The TV's HDMI-input label (what many TVs show instead of "HDMI 1", the

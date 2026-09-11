@@ -420,6 +420,16 @@ sudo apt-get install -y v4l-utils
 sudo setcap cap_net_admin+ep "$(command -v cec-ctl)"
 sudo usermod -aG video shairport-sync
 
+# airplay-tv-power.sh runs as the `shairport-sync` user and reads the web
+# UI's connect-volume setting out of this user's ~/.config. Recent Raspberry
+# Pi OS creates home directories 0700, which blocks that read at the *parent
+# directory* even though config.json itself is world-readable -- so the
+# script silently fell back to its built-in default and the web UI's
+# "AirPlay connect volume" setting did nothing at all. o+x grants traversal
+# only: other users can reach a known path inside, but still cannot list the
+# home directory.
+sudo chmod o+x "$TARGET_HOME"
+
 sudo install -m 0755 "$SOFTWARE_DIR/cec/airplay-tv-power.sh" /usr/local/bin/airplay-tv-power.sh
 sudo install -m 0755 "$SOFTWARE_DIR/cec/airplay-cec-remote.py" /usr/local/bin/airplay-cec-remote.py
 sudo cp "$SOFTWARE_DIR/cec/airplay-cec-remote.service" /etc/systemd/system/
